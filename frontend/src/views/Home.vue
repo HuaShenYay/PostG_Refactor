@@ -634,6 +634,20 @@ const submitComment = async () => {
       newComment.value = ''
       newRating.value = 3
       newLiked.value = false
+      
+      // 如果返回了推荐诗歌，显示并切换过去
+      if (res.data.recommended) {
+        message.success('评论成功！为你推荐一首诗')
+        // 添加到已看列表并切换推荐诗歌
+        if (!seenPoems.value.includes(dailyPoem.value.id)) {
+          seenPoems.value.push(dailyPoem.value.id)
+        }
+        dailyPoem.value = res.data.recommended
+        fetchReviews(dailyPoem.value.id)
+        fetchPoemAnalysis(dailyPoem.value.id)
+      } else {
+        message.success('评论成功！')
+      }
     }
   } catch(e) {
     message.error(e.response?.data?.message || '发表评论失败')

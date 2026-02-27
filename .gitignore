@@ -57,7 +57,7 @@ experiment_results.png
 data/dataset.csv
 data/dict.csv
 data/dict.xlsx
-data/chinese-poetry/
+data/chinese-poetry
 
 # Model cache (can be regenerated)
 backend/saved_models/vector_cache/

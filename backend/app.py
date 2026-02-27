@@ -412,9 +412,58 @@ def add_review():
     )
     db.session.add(new_review)
     db.session.commit()
-    rec_service.refresh_if_needed(force=False)
+    rec_service.refresh_if_needed(force=True)
 
-    return jsonify({"message": "雅评已收录", "status": "success", "topics": topic_names})
+    # 评论成功后，返回基于 Hybrid 模型的推荐
+    recommended_poem = None
+    
+    try:
+        # 获取用户的所有评论历史（包括刚提交的）
+        user_reviews = Review.query.filter_by(user_id=user.id).all()
+        user_interactions = [
+            {
+                "user_id": r.user_id,
+                "poem_id": r.poem_id,
+                "rating": r.rating,
+                "created_at": r.created_at or datetime.utcnow(),
+                "liked": bool(r.liked),
+            }
+            for r in user_reviews
+        ]
+        
+        # 排除已评论的诗歌
+        exclude_ids = {r.poem_id for r in user_reviews}
+        
+        # 使用 Hybrid 推荐
+        all_interactions = rec_service._build_interactions()
+        recs = rec_service.recommender.recommend(user_interactions, all_interactions, top_k=5)
+        
+        # 找到第一个未被评论的推荐
+        for rec in recs:
+            if rec["poem_id"] not in exclude_ids:
+                poem = Poem.query.get(rec["poem_id"])
+                if poem:
+                    recommended_poem = poem.to_dict()
+                    recommended_poem["recommend_reason"] = "为你推荐"
+                    break
+                
+    except Exception as e:
+        print(f"推荐失败: {e}")
+
+    # 如果Hybrid推荐失败，使用回退方案
+    if not recommended_poem:
+        exclude_ids.add(poem_id)  # 排除刚评论的诗歌
+        fallback = Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
+        if fallback:
+            recommended_poem = fallback.to_dict()
+            recommended_poem["recommend_reason"] = "随机推荐"
+
+    return jsonify({
+        "message": "雅评已收录", 
+        "status": "success", 
+        "topics": topic_names,
+        "recommended": recommended_poem
+    })
 
 
 def _extract_preference_topic_tokens(user):
