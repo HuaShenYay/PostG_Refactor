@@ -317,25 +317,44 @@ class BertopicRecommender:
             for pid, score in poem_scores.most_common(top_k)
         ]
 
-    def _diversify(self, candidates, limit=10):
-        """多样化排序"""
+    def _diversify(self, candidates, limit=10, lambda_weight=0.75):
+        """使用 MMR 的多样化重排"""
         if not candidates:
             return []
 
+        ranked = sorted(candidates, key=lambda x: x[1], reverse=True)
         selected = []
-        remaining = list(candidates)
 
-        while remaining and len(selected) < limit:
+        while ranked and len(selected) < limit:
+            if not selected:
+                selected.append(ranked.pop(0))
+                continue
+
             best_idx = 0
-            best_score = remaining[0][1]
+            best_mmr = float("-inf")
 
-            for idx, (pid, score) in enumerate(remaining):
-                if score > best_score:
-                    best_score = score
+            for idx, (pid, base_score) in enumerate(ranked):
+                poem_idx = self.poem_id_map.get(pid)
+                if poem_idx is None:
+                    mmr_score = base_score
+                else:
+                    redundancy = 0.0
+                    for selected_pid, _ in selected:
+                        selected_idx = self.poem_id_map.get(selected_pid)
+                        if selected_idx is None:
+                            continue
+                        sim = cosine_similarity(
+                            [self.topic_matrix[poem_idx]],
+                            [self.topic_matrix[selected_idx]],
+                        )[0][0]
+                        redundancy = max(redundancy, float(sim))
+                    mmr_score = lambda_weight * base_score - (1 - lambda_weight) * redundancy
+
+                if mmr_score > best_mmr:
+                    best_mmr = mmr_score
                     best_idx = idx
 
-            selected.append(remaining[best_idx])
-            remaining.pop(best_idx)
+            selected.append(ranked.pop(best_idx))
 
         return selected
 
