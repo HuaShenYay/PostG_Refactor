@@ -401,22 +401,34 @@ def add_review():
 
 @app.route("/api/recommend_one/<username>")
 def recommend_one(username):
-    """BERTopic-only 推荐入口"""
+    """智能推荐入口 - 解决冷启动和循环问题"""
     user = User.query.filter_by(username=username).first()
     current_id = request.args.get("current_id", type=int)
     skip_count = request.args.get("skip_count", 0, type=int)
+    
+    # 获取用户会话历史（用于避免循环）
+    session_key = f"seen_poems_{username}"
+    seen_poems = request.args.getlist("seen_ids") or []
+    seen_ids = set(int(x) for x in seen_poems if str(x).isdigit())
+    if current_id:
+        seen_ids.add(current_id)
 
     if not user:
+        # 访客模式：完全随机
         query = Poem.query
-        if current_id:
-            query = query.filter(Poem.id != current_id)
+        if seen_ids:
+            query = query.filter(~Poem.id.in_(seen_ids))
         poem_obj = query.order_by(func.rand()).first()
+        if not poem_obj:
+            # 如果都看过，重置
+            poem_obj = Poem.query.order_by(func.rand()).first()
         if not poem_obj:
             return jsonify({"error": "Poem list empty"}), 404
         res = poem_obj.to_dict()
         res["recommend_reason"] = "访客模式随机推荐"
         return jsonify(res)
 
+    # 获取用户评论历史
     user_reviews = Review.query.filter_by(user_id=user.id).all()
     user_interactions = [
         {
@@ -428,45 +440,141 @@ def recommend_one(username):
         }
         for r in user_reviews
     ]
-
+    
+    # 构建排除列表（已评论 + 本次会话已看）
     exclude_ids = {r.poem_id for r in user_reviews}
-    if current_id:
-        exclude_ids.add(current_id)
+    exclude_ids.update(seen_ids)
 
-    # 每隔 5 次跳过，强制推荐一首全站无人评论作品，提高探索性
-    if skip_count > 0 and skip_count % 5 == 0:
+    # ========== 策略1: 探索模式（每3次强制探索）==========
+    if skip_count > 0 and skip_count % 3 == 0:
+        import random
+        
+        # 策略1a: 获取所有符合条件的诗歌，然后随机选择
+        subquery = db.session.query(
+            Review.poem_id,
+            func.count(Review.id).label('review_count'),
+            func.avg(Review.rating).label('avg_rating')
+        ).group_by(Review.poem_id).subquery()
+        
+        explore_candidates = Poem.query.outerjoin(
+            subquery, Poem.id == subquery.c.poem_id
+        ).filter(
+            ~Poem.id.in_(exclude_ids)
+        ).filter(
+            (subquery.c.review_count < 3) | (subquery.c.review_count.is_(None))
+        ).order_by(
+            func.coalesce(subquery.c.avg_rating, 4.0).desc()
+        ).limit(20).all()
+        
+        if explore_candidates:
+            # 随机选择一首
+            explore_poem = random.choice(explore_candidates)
+            res = explore_poem.to_dict()
+            res["recommend_reason"] = "探索推荐：小众佳作"
+            return jsonify(res)
+        
+        # 策略1b: 推荐从未被评论的诗歌
         reviewed_poem_ids = {r.poem_id for r in Review.query.with_entities(Review.poem_id).all()}
-        unseen_poem = (
-            Poem.query.filter(~Poem.id.in_(reviewed_poem_ids))
-            .filter(~Poem.id.in_(exclude_ids))
-            .first()
-        )
-        if unseen_poem:
+        unseen_candidates = Poem.query.filter(
+            ~Poem.id.in_(reviewed_poem_ids),
+            ~Poem.id.in_(exclude_ids)
+        ).limit(20).all()
+        
+        if unseen_candidates:
+            unseen_poem = random.choice(unseen_candidates)
             res = unseen_poem.to_dict()
-            res["recommend_reason"] = "探索推荐：尚未被评论的佳作"
+            res["recommend_reason"] = "探索推荐：尚未被发现的诗"
             return jsonify(res)
 
+    # ========== 策略2: 冷启动优化（新用户/无评论用户）==========
+    if len(user_reviews) == 0:
+        import random
+        import time
+        
+        # 新用户：从多样化的热门诗歌中选择
+        popular_poems = db.session.query(
+            Poem,
+            func.count(Review.id).label('review_count')
+        ).outerjoin(Review).group_by(Poem.id).order_by(
+            func.count(Review.id).desc()
+        ).limit(50).all()  # 获取更多候选
+        
+        if popular_poems:
+            # 使用时间戳+skip_count确保每次不同
+            random.seed(int(time.time() * 1000) % 10000 + skip_count)
+            # 随机选择
+            selected = random.choice(popular_poems)
+            if selected[0].id not in exclude_ids:
+                res = selected[0].to_dict()
+                res["recommend_reason"] = "热门推荐"
+                return jsonify(res)
+        
+        # 如果都不行，随机推荐
+        fallback = Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
+        if fallback:
+            res = fallback.to_dict()
+            res["recommend_reason"] = "随机推荐"
+            return jsonify(res)
+
+    # ========== 策略3: 基于BERTopic的智能推荐（有评论用户）==========
     try:
         rec_service.refresh_if_needed()
         all_interactions = rec_service._build_interactions()
-        recs = rec_service.recommender.recommend(user_interactions, all_interactions, top_k=20)
-
-        for rec in recs:
-            if rec["poem_id"] in exclude_ids:
-                continue
-            poem = Poem.query.get(rec["poem_id"])
+        
+        # 获取候选推荐（扩大候选池到100首）
+        recs = rec_service.recommender.recommend(user_interactions, all_interactions, top_k=100)
+        
+        # 过滤已看过的
+        candidates = [rec for rec in recs if rec["poem_id"] not in exclude_ids]
+        
+        # 如果候选少于20首，补充随机推荐
+        if len(candidates) < 20:
+            random_poems = Poem.query.filter(
+                ~Poem.id.in_(exclude_ids),
+                ~Poem.id.in_([r["poem_id"] for r in candidates])
+            ).order_by(func.rand()).limit(30).all()
+            for p in random_poems:
+                candidates.append({"poem_id": p.id, "score": 0.5})
+        
+        # 随机选择（增加时间和用户ID的随机性）
+        if candidates:
+            import random
+            import time
+            # 使用时间戳+用户ID+skip_count作为种子
+            random.seed(int(time.time() * 1000) % 10000 + user.id + skip_count)
+            
+            # 从前20个候选中随机选择（如果候选少于20个则全部）
+            pool_size = min(20, len(candidates))
+            selected_idx = random.randint(0, pool_size - 1)
+            selected = candidates[selected_idx]
+            
+            poem = Poem.query.get(selected["poem_id"])
             if poem:
                 res = poem.to_dict()
-                res["recommend_reason"] = "BERTopic语义推荐"
+                res["recommend_reason"] = "为你推荐"
                 return jsonify(res)
+                
     except Exception as e:
         print(f"Recommend error: {e}")
+        import traceback
+        traceback.print_exc()
 
-    fallback_query = Poem.query.filter(~Poem.id.in_(exclude_ids))
+    # ========== 最终回退：完全随机 ==========
+    fallback_query = Poem.query
+    if exclude_ids:
+        fallback_query = fallback_query.filter(~Poem.id.in_(exclude_ids))
     fallback = fallback_query.order_by(func.rand()).first()
+    
     if fallback:
         res = fallback.to_dict()
-        res["recommend_reason"] = "回退随机推荐"
+        res["recommend_reason"] = "随机发现"
+        return jsonify(res)
+    
+    # 如果所有诗歌都看过，重置并随机推荐
+    fallback = Poem.query.order_by(func.rand()).first()
+    if fallback:
+        res = fallback.to_dict()
+        res["recommend_reason"] = "重新开始随机推荐"
         return jsonify(res)
 
     return jsonify({"error": "Poem list empty"}), 404

@@ -236,6 +236,7 @@ const newLiked = ref(false)
 const userProfile = ref(null)
 const scrollContainer = ref(null)
 const skipCount = ref(0)
+const seenPoems = ref([])
 const poemAnalysis = ref({ 
   matrix: [], 
   rhymes: [], 
@@ -561,6 +562,18 @@ const fetchUserProfile = async () => {
 }
 
 const getAnotherPoem = async () => {
+  // 记录当前诗歌到已看过列表
+  if (dailyPoem.value && dailyPoem.value.id) {
+    if (!seenPoems.value.includes(dailyPoem.value.id)) {
+      seenPoems.value.push(dailyPoem.value.id)
+    }
+  }
+  
+  // 限制已看过列表大小，避免过长
+  if (seenPoems.value.length > 50) {
+    seenPoems.value = seenPoems.value.slice(-50)
+  }
+  
   const currentId = dailyPoem.value ? dailyPoem.value.id : ''
   dailyPoem.value = null
   
@@ -571,7 +584,9 @@ const getAnotherPoem = async () => {
 
   try {
     skipCount.value++
-    const res = await axios.get(`/api/recommend_one/${currentUser}?current_id=${currentId}&skip_count=${skipCount.value}`)
+    // 传递已看过的诗歌ID列表
+    const seenIdsParam = seenPoems.value.join(',')
+    const res = await axios.get(`/api/recommend_one/${currentUser}?current_id=${currentId}&skip_count=${skipCount.value}&seen_ids=${seenIdsParam}`)
     dailyPoem.value = res.data
     fetchReviews(dailyPoem.value.id)
     fetchPoemAnalysis(dailyPoem.value.id)
