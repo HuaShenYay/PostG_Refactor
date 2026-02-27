@@ -97,21 +97,7 @@
 
             <!-- Empty / Initial State -->
             <div v-else-if="!searchQuery && !searchLoading" class="search-placeholder">
-                <div class="suggestion-section">
-                    <h3>时下热搜</h3>
-                    <div class="tag-cloud">
-                        <n-tag v-for="tag in hotTags" :key="tag" clickable round @click="quickSearch(tag)">{{ tag }}</n-tag>
-                    </div>
-                </div>
-                <div class="suggestion-section">
-                    <h3>诗意分类</h3>
-                    <div class="category-grid">
-                        <div v-for="cat in categories" :key="cat.name" class="category-item glass-card" @click="quickSearch(cat.name)">
-                            <n-icon size="24" :component="cat.icon" />
-                            <span>{{ cat.name }}</span>
-                        </div>
-                    </div>
-                </div>
+                <n-empty description="输入标题、作者或诗句，开始探索诗海" />
             </div>
 
             <div v-else-if="searchQuery && !searchLoading" class="search-empty">
@@ -139,13 +125,7 @@ import {
   ChevronForward as NArrowRight, 
   PersonOutline as NPersonOutline,
   GlobeOutline as NGlobeOutline,
-  Sparkles as NSparkles,
-  LeafOutline as NLeaf,
-  MoonOutline as NMoon,
-  WineOutline as NWine,
-  BoatOutline as NBoat,
-  CloudOutline as NCloud,
-  FlowerOutline as NFlower
+  Sparkles as NSparkles
 } from '@vicons/ionicons5'
 
 const router = useRouter()
@@ -155,16 +135,6 @@ const currentUser = localStorage.getItem('user') || '访客'
 const searchQuery = ref('')
 const searchLoading = ref(false)
 const searchResults = ref([])
-
-const hotTags = ['李白', '苏轼', '明月', '春风', '江南', '相思', '杜甫', '山水']
-const categories = [
-  { name: '山水', icon: NLeaf },
-  { name: '月色', icon: NMoon },
-  { name: '美酒', icon: NWine },
-  { name: '归舟', icon: NBoat },
-  { name: '云烟', icon: NCloud },
-  { name: '繁花', icon: NFlower }
-]
 
 const goHome = () => router.push('/')
 const goToPersonalAnalysis = () => router.push('/personal-analysis')
@@ -209,11 +179,6 @@ const handleInputSearch = debounce(() => {
     searchResults.value = []
   }
 }, 300)
-
-const quickSearch = (tag) => {
-  searchQuery.value = tag
-  handleSearch()
-}
 
 onMounted(() => {
     // 检查是否有来自 URL 的搜索参数

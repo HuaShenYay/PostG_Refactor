@@ -9,7 +9,7 @@ class User(db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), default="123456")
+    password_hash = db.Column(db.String(256), default="123456")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     preference_topics = db.Column(db.Text)
@@ -21,7 +21,7 @@ class User(db.Model):
         return value.startswith(("pbkdf2:", "scrypt:"))
 
     def set_password(self, raw_password):
-        self.password_hash = generate_password_hash(raw_password)
+        self.password_hash = generate_password_hash(raw_password, method='pbkdf2:sha256')
 
     def needs_password_rehash(self):
         return not self._looks_like_password_hash(self.password_hash)
@@ -103,6 +103,7 @@ class Review(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     poem_id = db.Column(db.Integer, db.ForeignKey("poems.id"), nullable=False)
     comment = db.Column(db.Text)
+    topic_names = db.Column(db.Text)
 
     rating = db.Column(db.Float, default=3.0)
     liked = db.Column(db.Boolean, default=False)
@@ -125,6 +126,7 @@ class Review(db.Model):
             "user_id": self.user_id,
             "poem_id": self.poem_id,
             "comment": self.comment,
+            "topic_names": self.topic_names,
             "rating": self.rating,
             "liked": self.liked,
             "created_at": self.created_at.isoformat() if self.created_at else None,

@@ -136,30 +136,6 @@
                 </div>
             </div>
         </div>
-
-        <!-- 底部推荐 (Gallery Style) -->
-        <section class="recommend-gallery anim-fade-up" style="animation-delay: 0.4s">
-            <div class="gallery-header">
-                <div class="line"></div>
-                <h2>灵感秘境</h2>
-                <div class="line"></div>
-            </div>
-            <div class="gallery-grid">
-                <div v-for="poem in recommendedPoems" :key="poem.id" class="gallery-item glass-card" @click="goToPoem(poem.id)">
-                    <div class="item-overlay"></div>
-                    <div class="item-content">
-                        <h4 class="item-title">{{ poem.title }}</h4>
-                        <span class="item-author">〔{{ poem.author }}〕</span>
-                        <div class="item-divider"></div>
-                        <p class="item-excerpt">{{ poem.content.substring(0, 35) }}...</p>
-                        <div class="item-footer">
-                            <n-icon><NSparkles /></n-icon>
-                            <span>{{ poem.reason }}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
     </main>
   </div>
 </template>
@@ -224,7 +200,6 @@ const userStats = ref({
 })
 
 const userPreferences = ref([])
-const recommendedPoems = ref([])
 const formStats = ref([])
 const wordCloudData = ref([])
 const timeInsights = ref([])
@@ -233,13 +208,12 @@ const poetThemeSankeyData = ref({ nodes: [], links: [] })
 // Fetch Data
 const fetchData = async () => {
   try {
-    const [statsRes, prefRes, timeRes, formRes, wcRes, recRes, sankeyRes] = await Promise.all([
+    const [statsRes, prefRes, timeRes, formRes, wcRes, sankeyRes] = await Promise.all([
       axios.get(`/api/user/${currentUser}/stats`),
       axios.get(`/api/user/${currentUser}/preferences`),
       axios.get(`/api/user/${currentUser}/time-analysis`),
       axios.get(`/api/user/${currentUser}/form-stats`),
       axios.get(`/api/user/${currentUser}/wordcloud`),
-      axios.get(`/api/user/${currentUser}/recommendations`),
       axios.get(`/api/user/${currentUser}/poet-topic-sankey`)
     ])
     
@@ -248,7 +222,6 @@ const fetchData = async () => {
     timeInsights.value = timeRes.data.insights
     formStats.value = formRes.data
     wordCloudData.value = wcRes.data
-    recommendedPoems.value = recRes.data.poems
     poetThemeSankeyData.value = sankeyRes.data
     
     nextTickExec(() => {
@@ -264,7 +237,6 @@ const fetchData = async () => {
     ]
     formStats.value = [ { name: '七绝', value: 45 }, { name: '五律', value: 25 }, { name: '七律', value: 20 }, { name: '其他', value: 10 } ]
     wordCloudData.value = [ { name: '意境', value: 100 }, { name: '深远', value: 80 } ]
-    recommendedPoems.value = [ { id: 1, title: '春江花月夜', author: '张若虚', content: '...', reason: '推荐' } ]
     poetThemeSankeyData.value = {
         nodes: [{ name: '李白' }, { name: '杜甫' }, { name: '思乡' }, { name: '山水' }],
         links: [
@@ -666,68 +638,6 @@ const logout = () => {
     grid-template-columns: 1fr 1fr;
     gap: 40px;
 }
-
-/* Gallery Style Recommendations */
-.recommend-gallery {
-    margin-top: 120px;
-}
-
-.gallery-header {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 40px;
-    margin-bottom: 60px;
-}
-
-.gallery-header .line { flex: 0 0 100px; height: 1px; background: rgba(0,0,0,0.1); }
-.gallery-header h2 { font-family: "Noto Serif SC", serif; font-size: 32px; letter-spacing: 0.4em; }
-
-.gallery-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
-    gap: 40px;
-}
-
-.gallery-item {
-    padding: 0 !important;
-    position: relative;
-    cursor: pointer;
-    overflow: hidden;
-    height: 300px;
-    display: flex;
-    align-items: flex-end;
-    background: #fff !important;
-    border: 1px solid rgba(0,0,0,0.05) !important;
-}
-
-.item-content {
-    padding: 40px;
-    z-index: 2;
-    width: 100%;
-    transition: transform 0.4s var(--ease-smooth);
-}
-
-.item-title { font-size: 24px; margin-bottom: 8px; font-family: "Noto Serif SC", serif; }
-.item-author { font-size: 13px; color: var(--cinnabar-red); opacity: 0.8; letter-spacing: 0.2em; }
-.item-divider { width: 30px; height: 1px; background: var(--cinnabar-red); margin: 24px 0; transition: width 0.4s; }
-.item-excerpt { font-size: 15px; color: var(--text-secondary); line-height: 1.8; opacity: 0; transform: translateY(10px); transition: all 0.4s; }
-
-.item-footer {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 24px;
-    font-size: 11px;
-    color: var(--text-tertiary);
-    opacity: 0;
-    transition: all 0.4s;
-}
-
-.gallery-item:hover .item-content { transform: translateY(-40px); }
-.gallery-item:hover .item-divider { width: 60px; }
-.gallery-item:hover .item-excerpt, 
-.gallery-item:hover .item-footer { opacity: 1; transform: translateY(0); }
 
 /* Animation Utils */
 .anim-fade-up {

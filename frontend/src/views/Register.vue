@@ -113,7 +113,7 @@ const handleRegister = async () => {
     if (res.data.status === 'success') {
       message.success('注册成功')
       localStorage.setItem('user', form.username)
-      router.push('/guide?username=' + form.username)
+      router.push('/')
     } else {
       message.error(res.data.message)
     }

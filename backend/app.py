@@ -348,6 +348,23 @@ def get_single_poem_analysis(poem_id):
     )
 
 
+def extract_topics_from_comment(comment):
+    """从评论中提取主题关键词"""
+    import jieba
+    import jieba.analyse
+    
+    # 使用TF-IDF提取关键词
+    keywords = jieba.analyse.extract_tags(comment, topK=5, withWeight=True)
+    
+    # 过滤并格式化
+    topic_names = []
+    for word, weight in keywords:
+        if len(word) >= 2 and weight > 0.1:  # 至少2个字符，权重>0.1
+            topic_names.append(word)
+    
+    return "-".join(topic_names) if topic_names else "未分类"
+
+
 @app.route("/api/poem/review", methods=["POST"])
 def add_review():
     data = request.json
@@ -364,14 +381,22 @@ def add_review():
     if not user:
         return jsonify({"message": "用户不存在", "status": "error"}), 404
 
+    # 提取评论主题
+    topic_names = extract_topics_from_comment(comment)
+
     new_review = Review(
-        user_id=user.id, poem_id=poem_id, rating=rating, liked=liked, comment=comment
+        user_id=user.id, 
+        poem_id=poem_id, 
+        rating=rating, 
+        liked=liked, 
+        comment=comment,
+        topic_names=topic_names
     )
     db.session.add(new_review)
     db.session.commit()
     rec_service.refresh_if_needed(force=True)
 
-    return jsonify({"message": "雅评已收录", "status": "success"})
+    return jsonify({"message": "雅评已收录", "status": "success", "topics": topic_names})
 
 
 @app.route("/api/recommend_one/<username>")
@@ -542,34 +567,48 @@ def get_global_stats():
 @app.route("/api/global/popular-poems")
 def get_popular_poems():
     try:
-        # 基于用户评论来确定热门诗歌
+        time_range = request.args.get("time_range", "all")
+        
         from sqlalchemy import func as sql_func
+        from datetime import datetime, timedelta
+
+        base_query = Review.query
+        if time_range == "today":
+            today = datetime.utcnow().date()
+            base_query = base_query.filter(func.date(Review.created_at) == today)
+        elif time_range == "week":
+            week_ago = datetime.utcnow() - timedelta(days=7)
+            base_query = base_query.filter(Review.created_at >= week_ago)
+        elif time_range == "month":
+            month_ago = datetime.utcnow() - timedelta(days=30)
+            base_query = base_query.filter(Review.created_at >= month_ago)
 
         # 统计每首诗的评论数量
         review_counts = (
-            db.session.query(Review.poem_id, sql_func.count(Review.id).label("count"))
+            base_query.with_entities(Review.poem_id, sql_func.count(Review.id).label("count"))
             .group_by(Review.poem_id)
-            .subquery()
+            .all()
         )
 
-        # 关联 Poem 获取诗歌信息
-        query = (
-            db.session.query(Poem, review_counts.c.count)
-            .outerjoin(review_counts, Poem.id == review_counts.c.poem_id)
-            .order_by(review_counts.c.count.desc())
-            .limit(10)
-        )
+        # 构建 poem_id -> count 的映射
+        count_map = {poem_id: count for poem_id, count in review_counts}
+
+        # 获取所有诗歌，按评论数排序
+        poems = Poem.query.all()
+        
+        # 按评论数排序
+        sorted_poems = sorted(poems, key=lambda p: count_map.get(p.id, 0), reverse=True)[:10]
 
         result = []
-        for poem, count in query.all():
+        for poem in sorted_poems:
             result.append(
                 {
                     "id": poem.id,
                     "title": poem.title,
                     "dynasty": poem.dynasty,
                     "author": poem.author,
+                    "review_count": count_map.get(poem.id, 0),
                     "likes": poem.likes or 0,
-                    "reviews": count or 0,
                     "views": poem.views or 0,
                     "shares": poem.shares or 0,
                 }
@@ -577,6 +616,8 @@ def get_popular_poems():
 
         return jsonify(result)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": f"获取热门诗歌失败: {str(e)}"}), 500
 
 
@@ -585,35 +626,47 @@ def get_theme_distribution():
     try:
         theme_counts = {}
 
-        # 只从 reviews 表获取用户评论的主题分布
-        # 关联 Review 和 Poem，获取用户评论过的诗歌的主题
-        reviews = Review.query.all()
+        # 从评论表的 topic_names 字段统计主题分布
+        reviews = Review.query.filter(Review.topic_names.isnot(None)).all()
 
         for review in reviews:
-            poem = Poem.query.get(review.poem_id)
-            if poem and poem.Bertopic:
-                themes = poem.Bertopic.split("-")
+            if review.topic_names:
+                # 支持多种分隔符
+                topic_data = review.topic_names
+                if "-" in topic_data:
+                    themes = topic_data.split("-")
+                elif "," in topic_data:
+                    themes = topic_data.split(",")
+                elif "|" in topic_data:
+                    themes = topic_data.split("|")
+                elif " " in topic_data:
+                    themes = topic_data.split()
+                else:
+                    themes = [topic_data]
+                
                 for t in themes:
                     t = t.strip()
-                    if t:
+                    if t and t != "未知":
                         theme_counts[t] = theme_counts.get(t, 0) + 1
 
         result = []
-        for theme, count in theme_counts.items():
+        for theme, count in sorted(theme_counts.items(), key=lambda x: x[1], reverse=True):
             result.append({"name": theme, "value": count})
 
         # 如果没有评论数据，返回默认数据
         if not result:
             result = [
-                {"name": "山水田园", "value": 30},
-                {"name": "思乡情怀", "value": 25},
-                {"name": "豪迈边塞", "value": 20},
-                {"name": "离别赠答", "value": 15},
-                {"name": "咏史怀古", "value": 10},
+                {"name": "意境", "value": 30},
+                {"name": "霸气", "value": 25},
+                {"name": "恢诡", "value": 20},
+                {"name": "氛围", "value": 15},
+                {"name": "感受", "value": 10},
             ]
 
         return jsonify(result)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": f"获取主题分布失败: {str(e)}"}), 500
 
 
@@ -952,19 +1005,28 @@ def get_user_time_analysis(username):
                 hour = r.created_at.hour
                 hour_counts[hour] = hour_counts.get(hour, 0) + 1
 
-        # 转换为前端需要的格式
+        # 中国传统十二时辰
+        time_periods = [
+            ("子时", 23, 1), ("丑时", 1, 3), ("寅时", 3, 5), ("卯时", 5, 7),
+            ("辰时", 7, 9), ("巳时", 9, 11), ("午时", 11, 13), ("未时", 13, 15),
+            ("申时", 15, 17), ("酉时", 17, 19), ("戌时", 19, 21), ("亥时", 21, 23)
+        ]
+
+        # 合并到时辰
+        period_counts = {name: 0 for name, _, _ in time_periods}
+        for hour, count in hour_counts.items():
+            for name, start, end in time_periods:
+                if start <= hour < end or (start > end and (hour >= start or hour < end)):
+                    period_counts[name] += count
+                    break
+
+        # 转换为前端需要的格式（按传统顺序）
+        ordered_periods = ["子时", "丑时", "寅时", "卯时", "辰时", "巳时", "午时", "未时", "申时", "酉时", "戌时", "亥时"]
         insights = []
-        for hour, count in sorted(hour_counts.items()):
-            period = (
-                "凌晨"
-                if 0 <= hour < 6
-                else "上午"
-                if 6 <= hour < 12
-                else "下午"
-                if 12 <= hour < 18
-                else "晚上"
-            )
-            insights.append({"hour": hour, "period": period, "count": count})
+        for period in ordered_periods:
+            count = period_counts.get(period, 0)
+            if count > 0:
+                insights.append({"time": period, "value": count})
 
         return jsonify({"insights": insights})
     except Exception as e:
