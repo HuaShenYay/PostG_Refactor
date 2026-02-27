@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Cache
+.ruff_cache/
+.cache/
+.pytest_cache/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+*.tgz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+experiment_results.png
+*.json
+!package.json
+
+# Data (large files)
+data/dataset.csv
+data/dict.csv
+data/dict.xlsx
+
+# Model cache (can be regenerated)
+backend/saved_models/vector_cache/

@@ -1,0 +1,23 @@
+name: postg-refactor
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - flask-sqlalchemy
+    - pymysql
+    - cryptography
+    - flask
+    - flask-cors
+    - jieba
+    - numpy
+    - pandas
+    - opencc
+    - pypinyin
+    - bertopic>=0.16.0
+    - sentence-transformers>=3.0.0
+    - scikit-learn>=1.0.0
+    - accelerate>=0.20.0
