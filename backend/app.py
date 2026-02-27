@@ -4,9 +4,10 @@ from config import Config
 from models import db, User, Poem, Review
 from datetime import datetime, timedelta
 import pandas as pd
-from sqlalchemy import text, func
+from sqlalchemy import text, func, or_
 import json
 import os
+import threading
 
 
 app = Flask(__name__)
@@ -22,6 +23,8 @@ class RecommendationService:
         self.recommender = None
         self.last_review_count = -1
         self.last_trained_at = None
+        self.refresh_lock = threading.Lock()
+        self.min_refresh_interval = timedelta(minutes=5)
 
     def _ensure_recommender(self):
         if self.recommender is None:
@@ -50,17 +53,32 @@ class RecommendationService:
         ]
 
     def refresh_if_needed(self, force=False):
+        now = datetime.utcnow()
         current_review_count = Review.query.count()
+
+        is_recently_trained = (
+            self.last_trained_at is not None
+            and (now - self.last_trained_at) < self.min_refresh_interval
+        )
         if not force and self.last_review_count == current_review_count:
             return
 
-        self._ensure_recommender()
-        poems_data = self._build_poems()
-        interactions = self._build_interactions()
+        if not force and is_recently_trained:
+            return
 
-        self.recommender.fit(poems_data, interactions)
-        self.last_review_count = current_review_count
-        self.last_trained_at = datetime.utcnow()
+        if not self.refresh_lock.acquire(blocking=False):
+            return
+
+        try:
+            self._ensure_recommender()
+            poems_data = self._build_poems()
+            interactions = self._build_interactions()
+
+            self.recommender.fit(poems_data, interactions)
+            self.last_review_count = current_review_count
+            self.last_trained_at = datetime.utcnow()
+        finally:
+            self.refresh_lock.release()
 
 
 rec_service = RecommendationService()
@@ -394,9 +412,43 @@ def add_review():
     )
     db.session.add(new_review)
     db.session.commit()
-    rec_service.refresh_if_needed(force=True)
+    rec_service.refresh_if_needed(force=False)
 
     return jsonify({"message": "雅评已收录", "status": "success", "topics": topic_names})
+
+
+def _extract_preference_topic_tokens(user):
+    if not user or not user.preference_topics:
+        return []
+
+    try:
+        preference_data = json.loads(user.preference_topics)
+    except Exception:
+        return []
+
+    topic_tokens = []
+    for item in preference_data:
+        if isinstance(item, dict):
+            raw_keywords = item.get("keywords")
+            if isinstance(raw_keywords, list):
+                topic_tokens.extend(str(k).strip() for k in raw_keywords if str(k).strip())
+            elif isinstance(raw_keywords, str) and raw_keywords.strip():
+                topic_tokens.append(raw_keywords.strip())
+
+            raw_topic_id = item.get("topic_id")
+            if raw_topic_id is not None:
+                topic_tokens.append(str(raw_topic_id))
+        elif isinstance(item, str) and item.strip():
+            topic_tokens.append(item.strip())
+
+    # 保持顺序去重
+    deduped = []
+    seen = set()
+    for token in topic_tokens:
+        if token not in seen:
+            seen.add(token)
+            deduped.append(token)
+    return deduped
 
 
 @app.route("/api/recommend_one/<username>")
@@ -404,10 +456,9 @@ def recommend_one(username):
     """智能推荐入口 - 解决冷启动和循环问题"""
     user = User.query.filter_by(username=username).first()
     current_id = request.args.get("current_id", type=int)
-    skip_count = request.args.get("skip_count", 0, type=int)
+    skip_count = max(0, request.args.get("skip_count", 0, type=int) or 0)
     
     # 获取用户会话历史（用于避免循环）
-    session_key = f"seen_poems_{username}"
     seen_poems = request.args.getlist("seen_ids") or []
     seen_ids = set(int(x) for x in seen_poems if str(x).isdigit())
     if current_id:
@@ -446,7 +497,9 @@ def recommend_one(username):
     exclude_ids.update(seen_ids)
 
     # ========== 策略1: 探索模式（每3次强制探索）==========
-    if skip_count > 0 and skip_count % 3 == 0:
+    explore_frequency = 3
+    should_explore = skip_count > 0 and skip_count % explore_frequency == 0
+    if should_explore:
         import random
         
         # 策略1a: 获取所有符合条件的诗歌，然后随机选择
@@ -489,26 +542,44 @@ def recommend_one(username):
     # ========== 策略2: 冷启动优化（新用户/无评论用户）==========
     if len(user_reviews) == 0:
         import random
-        import time
-        
-        # 新用户：从多样化的热门诗歌中选择
-        popular_poems = db.session.query(
-            Poem,
-            func.count(Review.id).label('review_count')
-        ).outerjoin(Review).group_by(Poem.id).order_by(
-            func.count(Review.id).desc()
-        ).limit(50).all()  # 获取更多候选
-        
+
+        preference_tokens = _extract_preference_topic_tokens(user)
+        if preference_tokens:
+            preference_filters = []
+            for token in preference_tokens[:5]:
+                preference_filters.append(Poem.Bertopic.ilike(f"%{token}%"))
+                preference_filters.append(Poem.Real_topic.ilike(f"%{token}%"))
+
+            preferred_candidates = (
+                Poem.query.filter(~Poem.id.in_(exclude_ids))
+                .filter(or_(*preference_filters))
+                .limit(50)
+                .all()
+            )
+            if preferred_candidates:
+                preferred_poem = random.choice(preferred_candidates)
+                res = preferred_poem.to_dict()
+                res["recommend_reason"] = "偏好主题推荐"
+                return jsonify(res)
+
+        # 新用户：从热门诗歌中随机采样，避免过度重复
+        popular_poems = (
+            db.session.query(Poem, func.count(Review.id).label("review_count"))
+            .outerjoin(Review)
+            .group_by(Poem.id)
+            .order_by(func.count(Review.id).desc())
+            .limit(50)
+            .all()
+        )
+
         if popular_poems:
-            # 使用时间戳+skip_count确保每次不同
-            random.seed(int(time.time() * 1000) % 10000 + skip_count)
-            # 随机选择
-            selected = random.choice(popular_poems)
-            if selected[0].id not in exclude_ids:
-                res = selected[0].to_dict()
+            available_popular = [item[0] for item in popular_poems if item[0].id not in exclude_ids]
+            if available_popular:
+                selected = random.choice(available_popular)
+                res = selected.to_dict()
                 res["recommend_reason"] = "热门推荐"
                 return jsonify(res)
-        
+
         # 如果都不行，随机推荐
         fallback = Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
         if fallback:
