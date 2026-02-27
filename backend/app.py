@@ -8,52 +8,67 @@ from sqlalchemy import text, func
 import json
 import os
 
+
 app = Flask(__name__)
 app.config.from_object(Config)
 
 CORS(app)
 db.init_app(app)
 
-recommender = None
+class RecommendationService:
+    """BERTopic-only recommender service with lightweight refresh control."""
+
+    def __init__(self):
+        self.recommender = None
+        self.last_review_count = -1
+        self.last_trained_at = None
+
+    def _ensure_recommender(self):
+        if self.recommender is None:
+            from core.bertopic_recommender import BertopicRecommender
+
+            self.recommender = BertopicRecommender()
+
+    @staticmethod
+    def _build_interactions():
+        return [
+            {
+                "user_id": r.user_id,
+                "poem_id": r.poem_id,
+                "rating": r.rating,
+                "created_at": r.created_at or datetime.utcnow(),
+                "liked": bool(r.liked),
+            }
+            for r in Review.query.all()
+        ]
+
+    @staticmethod
+    def _build_poems():
+        return [
+            {"id": p.id, "content": p.content or "", "title": p.title or ""}
+            for p in Poem.query.all()
+        ]
+
+    def refresh_if_needed(self, force=False):
+        current_review_count = Review.query.count()
+        if not force and self.last_review_count == current_review_count:
+            return
+
+        self._ensure_recommender()
+        poems_data = self._build_poems()
+        interactions = self._build_interactions()
+
+        self.recommender.fit(poems_data, interactions)
+        self.last_review_count = current_review_count
+        self.last_trained_at = datetime.utcnow()
 
 
-def init_recommender():
-    """初始化推荐系统"""
-    global recommender
-    try:
-        from core.hybrid_strategy import HybridRecommender
-
-        with app.app_context():
-            poems = Poem.query.all()
-            interactions = []
-
-            for r in Review.query.all():
-                interactions.append(
-                    {
-                        "user_id": r.user_id,
-                        "poem_id": r.poem_id,
-                        "rating": r.rating,
-                        "created_at": r.created_at or datetime.utcnow(),
-                        "liked": r.liked,
-                    }
-                )
-
-            poems_data = [
-                {"id": p.id, "content": p.content, "title": p.title} for p in poems
-            ]
-
-            if poems_data and interactions:
-                recommender = HybridRecommender.fit(poems_data, interactions)
-                print("[System] Recommender initialized successfully")
-                return recommender
-    except Exception as e:
-        print(f"[System] Recommender init failed: {e}")
-    return None
+rec_service = RecommendationService()
 
 
 @app.route("/")
 def hello_world():
-    return "Poetry Recommendation Engine (BERTopic Hybrid) is Running!"
+    return "Poetry Recommendation Engine (BERTopic Only) is Running!"
 
 
 @app.route("/api/login", methods=["POST"])
@@ -68,6 +83,9 @@ def login():
     user = User.query.filter_by(username=username).first()
 
     if user and user.check_password(password):
+        if user.needs_password_rehash():
+            user.set_password(password)
+            db.session.commit()
         return jsonify(
             {"message": "登录成功", "status": "success", "user": user.to_dict()}
         )
@@ -89,7 +107,8 @@ def register():
         return jsonify({"message": "此称谓已被占用", "status": "error"}), 400
 
     try:
-        new_user = User(username=username, password_hash=password)
+        new_user = User(username=username)
+        new_user.set_password(password)
         db.session.add(new_user)
         db.session.commit()
         return jsonify({"message": "注册成功，即将开启诗意之旅", "status": "success"})
@@ -119,7 +138,7 @@ def update_user():
         user.username = new_username
 
     if new_password:
-        user.password_hash = new_password
+        user.set_password(new_password)
 
     try:
         db.session.commit()
@@ -137,6 +156,32 @@ def get_poems():
     return jsonify([p.to_dict() for p in poems])
 
 
+
+
+@app.route("/api/topics")
+def get_topics():
+    """返回主题列表，供偏好引导页使用"""
+    poems = Poem.query.filter(Poem.Bertopic.isnot(None)).all()
+    counter = {}
+    for poem in poems:
+        for topic in (poem.Bertopic or "").split("-"):
+            topic = topic.strip()
+            if topic:
+                counter[topic] = counter.get(topic, 0) + 1
+
+    sorted_topics = sorted(counter.items(), key=lambda x: x[1], reverse=True)
+    if not sorted_topics:
+        fallback = [
+            "山水", "思乡", "边塞", "离别", "咏史", "田园", "闺怨", "怀古", "节序", "哲理",
+            "人生", "家国", "送别", "咏物", "写景"
+        ]
+        sorted_topics = [(name, 1) for name in fallback]
+
+    topics = {}
+    for idx, (name, _) in enumerate(sorted_topics[:15]):
+        topics[idx] = [name]
+
+    return jsonify(topics)
 @app.route("/api/poem/<int:poem_id>")
 def get_poem(poem_id):
     poem = Poem.query.get(poem_id)
@@ -310,6 +355,7 @@ def add_review():
     poem_id = data.get("poem_id")
     rating = data.get("rating", 5)
     comment = data.get("comment")
+    liked = bool(data.get("liked", False))
 
     if not all([username, poem_id, comment]):
         return jsonify({"message": "缺失必要信息", "status": "error"}), 400
@@ -319,104 +365,84 @@ def add_review():
         return jsonify({"message": "用户不存在", "status": "error"}), 404
 
     new_review = Review(
-        user_id=user.id, poem_id=poem_id, rating=rating, comment=comment
+        user_id=user.id, poem_id=poem_id, rating=rating, liked=liked, comment=comment
     )
     db.session.add(new_review)
     db.session.commit()
+    rec_service.refresh_if_needed(force=True)
 
     return jsonify({"message": "雅评已收录", "status": "success"})
 
 
 @app.route("/api/recommend_one/<username>")
 def recommend_one(username):
-    """智能推荐诗歌"""
-    import random
-
+    """BERTopic-only 推荐入口"""
     user = User.query.filter_by(username=username).first()
-    if not user:
-        poems = Poem.query.limit(6).all()
-        return jsonify([p.to_dict() for p in poems])
-
     current_id = request.args.get("current_id", type=int)
     skip_count = request.args.get("skip_count", 0, type=int)
 
-    with app.app_context():
-        user_interactions = []
-        for r in Review.query.filter_by(user_id=user.id).all():
-            user_interactions.append(
-                {
-                    "user_id": r.user_id,
-                    "poem_id": r.poem_id,
-                    "rating": r.rating,
-                    "created_at": r.created_at,
-                    "liked": r.liked,
-                }
-            )
+    if not user:
+        query = Poem.query
+        if current_id:
+            query = query.filter(Poem.id != current_id)
+        poem_obj = query.order_by(func.rand()).first()
+        if not poem_obj:
+            return jsonify({"error": "Poem list empty"}), 404
+        res = poem_obj.to_dict()
+        res["recommend_reason"] = "访客模式随机推荐"
+        return jsonify(res)
 
-        all_interactions = []
-        for r in Review.query.all():
-            all_interactions.append(
-                {
-                    "user_id": r.user_id,
-                    "poem_id": r.poem_id,
-                    "rating": r.rating,
-                    "created_at": r.created_at,
-                    "liked": r.liked,
-                }
-            )
+    user_reviews = Review.query.filter_by(user_id=user.id).all()
+    user_interactions = [
+        {
+            "user_id": r.user_id,
+            "poem_id": r.poem_id,
+            "rating": r.rating,
+            "created_at": r.created_at or datetime.utcnow(),
+            "liked": bool(r.liked),
+        }
+        for r in user_reviews
+    ]
 
-        if skip_count > 0 and skip_count % 5 == 0:
-            all_poem_ids = [p.id for p in Poem.query.all()]
-            reviewed_poem_ids = [r.poem_id for r in Review.query.all()]
-            unseen_ids = list(set(all_poem_ids) - set(reviewed_poem_ids))
-
-            if unseen_ids:
-                poem_obj = Poem.query.filter(Poem.id.in_(unseen_ids)).first()
-                if poem_obj:
-                    res = poem_obj.to_dict()
-                    res["recommend_reason"] = "为您推荐一首尚未被发现的佳作"
-                    return jsonify(res)
-
-        try:
-            from core.hybrid_strategy import HybridRecommender
-
-            poems = Poem.query.all()
-            poems_data = [
-                {"id": p.id, "content": p.content, "title": p.title} for p in poems
-            ]
-
-            recommender = HybridRecommender()
-            recommender.fit(poems_data, all_interactions)
-
-            recs = recommender.recommend(user.id, top_k=10)
-
-            exclude_ids = {
-                r.poem_id for r in Review.query.filter_by(user_id=user.id).all()
-            }
-            if current_id:
-                exclude_ids.add(current_id)
-
-            for rec in recs:
-                if rec["poem_id"] not in exclude_ids:
-                    poem = Poem.query.get(rec["poem_id"])
-                    if poem:
-                        res = poem.to_dict()
-                        res["recommend_reason"] = "基于您的偏好推荐"
-                        return jsonify(res)
-        except Exception as e:
-            print(f"Recommend error: {e}")
-
-    query = Poem.query
+    exclude_ids = {r.poem_id for r in user_reviews}
     if current_id:
-        query = query.filter(Poem.id != current_id)
+        exclude_ids.add(current_id)
 
-    all_count = query.count()
-    if all_count > 0:
-        poem_obj = query.offset(random.randrange(all_count)).first()
-        if poem_obj:
-            res = poem_obj.to_dict()
-            res["recommend_reason"] = "随机选取的千古佳作"
+    # 每隔 5 次跳过，强制推荐一首全站无人评论作品，提高探索性
+    if skip_count > 0 and skip_count % 5 == 0:
+        reviewed_poem_ids = {r.poem_id for r in Review.query.with_entities(Review.poem_id).all()}
+        unseen_poem = (
+            Poem.query.filter(~Poem.id.in_(reviewed_poem_ids))
+            .filter(~Poem.id.in_(exclude_ids))
+            .first()
+        )
+        if unseen_poem:
+            res = unseen_poem.to_dict()
+            res["recommend_reason"] = "探索推荐：尚未被评论的佳作"
             return jsonify(res)
+
+    try:
+        rec_service.refresh_if_needed()
+        all_interactions = rec_service._build_interactions()
+        recs = rec_service.recommender.recommend(user_interactions, all_interactions, top_k=20)
+
+        for rec in recs:
+            if rec["poem_id"] in exclude_ids:
+                continue
+            poem = Poem.query.get(rec["poem_id"])
+            if poem:
+                res = poem.to_dict()
+                res["recommend_reason"] = "BERTopic语义推荐"
+                return jsonify(res)
+    except Exception as e:
+        print(f"Recommend error: {e}")
+
+    fallback_query = Poem.query.filter(~Poem.id.in_(exclude_ids))
+    fallback = fallback_query.order_by(func.rand()).first()
+    if fallback:
+        res = fallback.to_dict()
+        res["recommend_reason"] = "回退随机推荐"
+        return jsonify(res)
 
     return jsonify({"error": "Poem list empty"}), 404
 

@@ -1,5 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
+from werkzeug.security import check_password_hash, generate_password_hash
 
 db = SQLAlchemy()
 
@@ -13,6 +14,18 @@ class User(db.Model):
 
     preference_topics = db.Column(db.Text)
 
+    @staticmethod
+    def _looks_like_password_hash(value):
+        if not value:
+            return False
+        return value.startswith(("pbkdf2:", "scrypt:"))
+
+    def set_password(self, raw_password):
+        self.password_hash = generate_password_hash(raw_password)
+
+    def needs_password_rehash(self):
+        return not self._looks_like_password_hash(self.password_hash)
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -22,6 +35,8 @@ class User(db.Model):
         }
 
     def check_password(self, password):
+        if self._looks_like_password_hash(self.password_hash):
+            return check_password_hash(self.password_hash, password)
         return self.password_hash == password
 
 
