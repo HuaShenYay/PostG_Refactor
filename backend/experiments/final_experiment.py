@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-简化版实验 - 只需证明你的系统比传统算法好
-优化版本：修复权重和评估问题
+简化版实验 - 对比多算法推荐效果
+优化版本：修复评估与数据切分问题
 """
 
 import sys
@@ -14,6 +14,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
+
+ERROR_LOG_LIMIT = 10
 
 # 设置路径
 notebook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -173,33 +175,25 @@ print(f"  正样本(>=3.5): {sum(1 for r in ratings if r >= 3.5)/len(ratings)*10
 # =============================================================================
 print("\n[4] 划分训练集和测试集...")
 
-def split_data(interactions, test_ratio=0.2, seed=42):
-    np.random.seed(seed)
-    random.seed(seed)
-    
+def split_data(interactions, test_ratio=0.2):
+    """按时间切分，避免随机切分带来的信息泄漏"""
     user_data = defaultdict(list)
     for inter in interactions:
         user_data[inter['user_id']].append(inter)
-    
+
     train, test = [], []
-    
+
     for user_id, user_inters in user_data.items():
+        user_inters = sorted(user_inters, key=lambda x: x['created_at'])
         n = len(user_inters)
         test_size = max(1, int(n * test_ratio))
-        
-        indices = list(range(n))
-        random.shuffle(indices)
-        test_indices = set(indices[:test_size])
-        
-        for i, inter in enumerate(user_inters):
-            if i in test_indices:
-                test.append(inter)
-            else:
-                train.append(inter)
-    
+
+        train.extend(user_inters[:-test_size])
+        test.extend(user_inters[-test_size:])
+
     return train, test
 
-train_data, test_data = split_data(interactions, test_ratio=0.2, seed=42)
+train_data, test_data = split_data(interactions, test_ratio=0.2)
 print(f"  训练集: {len(train_data)} 条")
 print(f"  测试集: {len(test_data)} 条")
 
@@ -217,6 +211,7 @@ def evaluate_recommender(recommender, train_data, test_data, poems, rec_type, to
     
     # MAE
     predictions, actuals = [], []
+    error_examples = []
     for inter in test_data:
         user_id = inter['user_id']
         poem_id = inter['poem_id']
@@ -238,13 +233,18 @@ def evaluate_recommender(recommender, train_data, test_data, poems, rec_type, to
                         predictions.append(pred)
                         actuals.append(actual)
             
-            elif rec_type in ['item_cf', 'hybrid']:
+            elif rec_type == 'item_cf':
                 pred = recommender.predict_rating(user_inters, poem_id)
                 predictions.append(pred)
                 actuals.append(actual)
-        
-        except:
-            continue
+            elif rec_type == 'hybrid':
+                pred = recommender.predict_rating(user_id, poem_id)
+                predictions.append(pred)
+                actuals.append(actual)
+
+        except Exception as e:
+            if len(error_examples) < ERROR_LOG_LIMIT:
+                error_examples.append(f"MAE阶段 user={user_id}, poem={poem_id}, err={e}")
     
     mae = np.mean(np.abs(np.array(predictions) - np.array(actuals))) if predictions else float('nan')
     
@@ -272,7 +272,7 @@ def evaluate_recommender(recommender, train_data, test_data, poems, rec_type, to
                         for p in train_items if p['poem_id'] in poem_id_to_idx]
                 ratings = [p['rating'] for p in train_items if p['poem_id'] in poem_id_to_idx]
                 profile = recommender.get_user_profile(rated, ratings) if rated else None
-                recs = recommender.recommend(profile, exclude, top_k) if profile else []
+                recs = recommender.recommend(profile, exclude, top_k) if profile is not None else []
             
             elif rec_type == 'item_cf':
                 recs = recommender.recommend(train_items, exclude, top_k)
@@ -294,14 +294,15 @@ def evaluate_recommender(recommender, train_data, test_data, poems, rec_type, to
             recalls.append(r)
             f1s.append(f)
         
-        except:
-            continue
+        except Exception as e:
+            if len(error_examples) < ERROR_LOG_LIMIT:
+                error_examples.append(f"TopK阶段 user={user_id}, err={e}")
     
     precision = np.mean(precisions) if precisions else float('nan')
     recall = np.mean(recalls) if recalls else float('nan')
     f1 = np.mean(f1s) if f1s else float('nan')
     
-    return {'mae': mae, 'precision': precision, 'recall': recall, 'f1': f1}
+    return {'mae': mae, 'precision': precision, 'recall': recall, 'f1': f1, 'errors': error_examples}
 
 results = {}
 
@@ -313,6 +314,8 @@ try:
     cb_metrics = evaluate_recommender(cb, train_data, test_data, poems, 'cb', threshold=3.5)
     results['Content-Based'] = cb_metrics
     print(f"    MAE: {cb_metrics['mae']:.4f}, F1: {cb_metrics['f1']:.4f}")
+    if cb_metrics['errors']:
+        print(f"    ! 评估告警: {cb_metrics['errors'][:3]}")
 except Exception as e:
     print(f"    失败: {e}")
 
@@ -324,6 +327,8 @@ try:
     item_cf_metrics = evaluate_recommender(item_cf, train_data, test_data, poems, 'item_cf', threshold=3.5)
     results['Item-CF'] = item_cf_metrics
     print(f"    MAE: {item_cf_metrics['mae']:.4f}, F1: {item_cf_metrics['f1']:.4f}")
+    if item_cf_metrics['errors']:
+        print(f"    ! 评估告警: {item_cf_metrics['errors'][:3]}")
 except Exception as e:
     print(f"    失败: {e}")
 
@@ -335,6 +340,8 @@ try:
     hybrid_metrics = evaluate_recommender(hybrid, train_data, test_data, poems, 'hybrid', threshold=3.5)
     results['Hybrid'] = hybrid_metrics
     print(f"    MAE: {hybrid_metrics['mae']:.4f}, F1: {hybrid_metrics['f1']:.4f}")
+    if hybrid_metrics['errors']:
+        print(f"    ! 评估告警: {hybrid_metrics['errors'][:3]}")
 except Exception as e:
     print(f"    失败: {e}")
     import traceback
@@ -356,6 +363,8 @@ for name, metrics in results.items():
     r_str = f"{metrics['recall']:.4f}" if not np.isnan(metrics['recall']) else "N/A"
     f1_str = f"{metrics['f1']:.4f}" if not np.isnan(metrics['f1']) else "N/A"
     print(f"{name:<20} {mae_str:<12} {p_str:<12} {r_str:<12} {f1_str:<12}")
+    if metrics.get('errors'):
+        print(f"  ! 样例错误: {metrics['errors'][0]}")
 
 print("\n" + "="*70)
 print("结论")

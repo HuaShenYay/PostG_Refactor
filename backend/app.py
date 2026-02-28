@@ -139,15 +139,19 @@ def register():
 def update_user():
     data = request.json
     old_username = data.get("old_username")
+    current_password = data.get("current_password")
     new_username = data.get("new_username")
     new_password = data.get("new_password")
 
-    if not old_username:
-        return jsonify({"message": "无效的操作", "status": "error"}), 400
+    if not old_username or not current_password:
+        return jsonify({"message": "缺少身份校验信息", "status": "error"}), 400
 
     user = User.query.filter_by(username=old_username).first()
     if not user:
         return jsonify({"message": "用户不存在", "status": "error"}), 404
+
+    if not user.check_password(current_password):
+        return jsonify({"message": "当前口令错误", "status": "error"}), 401
 
     if new_username and new_username != old_username:
         existing = User.query.filter_by(username=new_username).first()
