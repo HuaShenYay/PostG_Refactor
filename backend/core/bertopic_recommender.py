@@ -65,6 +65,8 @@ class BertopicRecommender:
         self.topic_matrix = None
         self.poem_id_map = {}
         self.poem_ids = []
+        self.poem_topics = {}
+        self.topic_centroids = {}
 
         self.cache_dir = cache_dir or os.path.join(
             BASE_DIR, "saved_models", "vector_cache"
@@ -156,7 +158,37 @@ class BertopicRecommender:
             except Exception as e:
                 print(f"[BERTopic] Cache save failed: {e}")
 
+        self._update_topic_signals(poems)
         return True
+
+    def _update_topic_signals(self, poems):
+        """提取每首诗的主题ID，并构建主题中心向量。"""
+        self.poem_topics = {}
+        self.topic_centroids = {}
+
+        if self.bertopic_model is None or self.topic_matrix is None:
+            return
+
+        contents = [p.get("content", "") for p in poems]
+        if not contents:
+            return
+
+        try:
+            topic_ids, _ = self.bertopic_model.transform(contents)
+        except Exception as e:
+            print(f"[BERTopic] Topic transform failed: {e}")
+            return
+
+        topic_vectors = {}
+        for idx, topic_id in enumerate(topic_ids):
+            poem_id = self.poem_ids[idx]
+            self.poem_topics[poem_id] = int(topic_id)
+            if topic_id == -1:
+                continue
+            topic_vectors.setdefault(int(topic_id), []).append(self.topic_matrix[idx])
+
+        for topic_id, vectors in topic_vectors.items():
+            self.topic_centroids[topic_id] = np.mean(np.vstack(vectors), axis=0)
 
     def fit(self, poems, interactions):
         """
@@ -358,6 +390,49 @@ class BertopicRecommender:
 
         return selected
 
+    def _topic_alignment_rec(self, user_interactions, exclude_ids, top_k=20):
+        """基于BERTopic主题ID的偏好匹配推荐。"""
+        if not user_interactions or not self.poem_topics:
+            return []
+
+        topic_pref = Counter()
+        for inter in user_interactions:
+            topic_id = self.poem_topics.get(inter["poem_id"])
+            if topic_id is None or topic_id == -1:
+                continue
+            rating = inter.get("rating", 3.0)
+            rating_weight = max(0.2, min(1.0, rating / 5.0))
+            like_boost = 1.2 if inter.get("liked", False) else 1.0
+            topic_pref[topic_id] += rating_weight * like_boost
+
+        if not topic_pref:
+            return []
+
+        user_vec = self._get_user_profile_vector(user_interactions)
+        results = []
+
+        for poem_id in self.poem_ids:
+            if poem_id in exclude_ids:
+                continue
+
+            topic_id = self.poem_topics.get(poem_id)
+            if topic_id is None or topic_id == -1:
+                continue
+
+            base_score = float(topic_pref.get(topic_id, 0.0))
+            if base_score <= 0:
+                continue
+
+            centroid = self.topic_centroids.get(topic_id)
+            if user_vec is not None and centroid is not None:
+                align = float(cosine_similarity([user_vec], [centroid])[0][0])
+                base_score *= (1.0 + max(0.0, align))
+
+            results.append((poem_id, base_score))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+
     def recommend(self, user_interactions, all_interactions, top_k=10):
         """
         混合推荐主函数
@@ -378,11 +453,11 @@ class BertopicRecommender:
         interaction_count = len(user_interactions)
 
         if interaction_count == 0:
-            w_content, w_item_cf, w_user_cf, w_popular = 0.4, 0.0, 0.0, 0.6
+            w_content, w_item_cf, w_user_cf, w_topic, w_popular = 0.35, 0.0, 0.0, 0.15, 0.5
         elif interaction_count < 10:
-            w_content, w_item_cf, w_user_cf, w_popular = 0.3, 0.4, 0.2, 0.1
+            w_content, w_item_cf, w_user_cf, w_topic, w_popular = 0.25, 0.35, 0.2, 0.15, 0.05
         else:
-            w_content, w_item_cf, w_user_cf, w_popular = 0.2, 0.4, 0.4, 0.0
+            w_content, w_item_cf, w_user_cf, w_topic, w_popular = 0.2, 0.35, 0.3, 0.15, 0.0
 
         user_vec = self._get_user_profile_vector(user_interactions)
 
@@ -397,9 +472,14 @@ class BertopicRecommender:
             if w_user_cf > 0
             else []
         )
+        topic_rec = (
+            self._topic_alignment_rec(user_interactions, exclude_ids)
+            if w_topic > 0
+            else []
+        )
         popular_rec = (
             self._popular_rec(exclude_ids)
-            if w_popular > 0 or not any([content_rec, item_cf_rec, user_cf_rec])
+            if w_popular > 0 or not any([content_rec, item_cf_rec, user_cf_rec, topic_rec])
             else []
         )
 
@@ -412,6 +492,7 @@ class BertopicRecommender:
         content_norm = normalize(content_rec)
         item_cf_norm = normalize(item_cf_rec)
         user_cf_norm = normalize(user_cf_rec)
+        topic_norm = normalize(topic_rec)
         popular_norm = normalize(popular_rec)
 
         combined = Counter()
@@ -421,6 +502,8 @@ class BertopicRecommender:
             combined[pid] += score * w_item_cf
         for pid, score in user_cf_norm.items():
             combined[pid] += score * w_user_cf
+        for pid, score in topic_norm.items():
+            combined[pid] += score * w_topic
         for pid, score in popular_norm.items():
             combined[pid] += score * (w_popular if w_popular > 0 else 0.3)
 
