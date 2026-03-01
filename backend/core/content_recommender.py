@@ -18,13 +18,18 @@ class ContentBasedRecommender:
         self.poems = None
 
     def _tokenize(self, text):
-        """中文分词"""
+        """中英文分词"""
         if not text:
             return ""
-        chinese_only = re.sub(r"[^\u4e00-\u9fa5]", "", text)
-        words = jieba.lcut(chinese_only)
-        words = [w for w in words if w not in self.stopwords and len(w) > 1]
-        return " ".join(words)
+        chinese_only = re.sub(r"[^\u4e00-\u9fa5\s]", "", text)
+        chinese_words = jieba.lcut(chinese_only)
+        chinese_words = [w for w in chinese_words if w not in self.stopwords and len(w) > 1]
+        
+        english_words = re.findall(r"[a-zA-Z]+", text.lower())
+        english_words = [w for w in english_words if w not in self.stopwords and len(w) > 1]
+        
+        all_words = chinese_words + english_words
+        return " ".join(all_words)
 
     def fit(self, poems):
         """
@@ -118,11 +123,17 @@ class ContentBasedRecommender:
         if user_profile is None:
             return 3.0
 
-        similarity = cosine_similarity(
-            [user_profile], self.tfidf_matrix[poem_idx].toarray()
-        )[0][0]
+        poem_vec = self.tfidf_matrix[poem_idx].toarray().flatten()
+        user_vec = user_profile.flatten()
+        
+        norm_u = np.linalg.norm(user_vec)
+        norm_p = np.linalg.norm(poem_vec)
+        if norm_u == 0 or norm_p == 0:
+            return 3.0
+        
+        similarity = np.dot(user_vec, poem_vec) / (norm_u * norm_p)
         predicted_rating = 3.0 + similarity * 2.0
-        return np.clip(predicted_rating, 1.0, 5.0)
+        return float(np.clip(predicted_rating, 1.0, 5.0))
 
     def predict_all_ratings(self, user_profile):
         """预测用户对所有物品的评分"""

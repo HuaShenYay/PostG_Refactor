@@ -178,87 +178,36 @@ def mrr_at_k(recommended: List[int], relevant: set, k: int) -> float:
 
 
 class PlatinumHybrid:
-    """实验侧 Hybrid 聚合器（规避 core.HybridRecommender 的接口耦合问题）。"""
+    """BERTopic Enhanced CF - 核心算法：0.6×评分矩阵相似度 + 0.4×主题向量相似度"""
 
     def __init__(self, poems: List[dict], train_data: List[dict]):
-        from backend.core.content_recommender import ContentBasedRecommender
-        from backend.core.collaborative_filter import ItemBasedCFRecommender
+        from backend.core.bertopic_enhanced_cf import BERTopicEnhancedCF
 
         self.poems = poems
         self.pid_to_poem = {p["id"]: p for p in poems}
-        self.cb = ContentBasedRecommender()
-        self.cb.fit(poems)
 
-        self.cf = ItemBasedCFRecommender()
-        self.cf.fit(train_data, [p["id"] for p in poems])
-
-        self.bt = None
+        self.enhanced_cf = None
         try:
-            from backend.core.bertopic_recommender import BertopicRecommender
-
-            self.bt = BertopicRecommender()
-            self.bt.fit(poems, train_data)
+            self.enhanced_cf = BERTopicEnhancedCF(rating_weight=0.6, topic_weight=0.4)
+            self.enhanced_cf.fit(poems, train_data)
+            logger.info("BERTopic Enhanced CF 训练完成")
         except Exception as e:
-            logger.warning("BERTopic 不可用，降级为 CB+ItemCF: %s", e)
-
-    @staticmethod
-    def _weights(n_interactions: int) -> Dict[str, float]:
-        if n_interactions == 0:
-            return {"cb": 0.3, "item_cf": 0.2, "bertopic": 0.5}
-        if n_interactions < 10:
-            return {"cb": 0.3, "item_cf": 0.3, "bertopic": 0.4}
-        return {"cb": 0.2, "item_cf": 0.3, "bertopic": 0.5}
-
-    @staticmethod
-    def _norm(recs: List[dict]) -> Dict[int, float]:
-        if not recs:
-            return {}
-        max_score = max(r.get("score", 0.0) for r in recs)
-        if max_score <= 0:
-            return {}
-        return {r["poem_id"]: float(r["score"]) / max_score for r in recs}
+            logger.warning("BERTopic Enhanced CF 初始化失败: %s", e)
+            self.enhanced_cf = None
 
     def recommend(self, user_interactions: List[dict], exclude_ids: set, top_k: int) -> List[dict]:
-        weights = self._weights(len(user_interactions))
+        if self.enhanced_cf is None:
+            return []
 
-        rated_poems = [self.pid_to_poem[i["poem_id"]] for i in user_interactions if i["poem_id"] in self.pid_to_poem]
-        ratings = [i["rating"] for i in user_interactions if i["poem_id"] in self.pid_to_poem]
-
-        profile = self.cb.get_user_profile(rated_poems, ratings) if rated_poems else None
-        cb_recs = self.cb.recommend(profile, exclude_ids, top_k * 3) if profile is not None else []
-        cf_recs = self.cf.recommend(user_interactions, exclude_ids, top_k * 3)
-        bt_recs = self.bt.recommend(user_interactions, [], top_k * 3) if self.bt is not None else []
-
-        cb_n, cf_n, bt_n = self._norm(cb_recs), self._norm(cf_recs), self._norm(bt_recs)
-        all_ids = set(cb_n) | set(cf_n) | set(bt_n)
-
-        combined = []
-        for pid in all_ids:
-            if pid in exclude_ids:
-                continue
-            s = cb_n.get(pid, 0.0) * weights["cb"] + cf_n.get(pid, 0.0) * weights["item_cf"] + bt_n.get(pid, 0.0) * weights["bertopic"]
-            combined.append((pid, s))
-
-        combined.sort(key=lambda x: x[1], reverse=True)
-        return [{"poem_id": pid, "score": score} for pid, score in combined[:top_k]]
+        all_interactions = []  # 未使用，保留接口
+        recs = self.enhanced_cf.recommend(user_interactions, all_interactions, top_k)
+        
+        return [{"poem_id": r["poem_id"], "score": r["score"]} for r in recs if r["poem_id"] not in exclude_ids]
 
     def predict_rating(self, user_interactions: List[dict], poem_id: int) -> float:
-        rated_poems = [self.pid_to_poem[i["poem_id"]] for i in user_interactions if i["poem_id"] in self.pid_to_poem]
-        ratings = [i["rating"] for i in user_interactions if i["poem_id"] in self.pid_to_poem]
-        weights = self._weights(len(user_interactions))
-
-        cb_pred = 3.0
-        if rated_poems and poem_id in self.pid_to_poem:
-            profile = self.cb.get_user_profile(rated_poems, ratings)
-            if profile is not None:
-                poem_idx = next((idx for idx, p in enumerate(self.poems) if p["id"] == poem_id), None)
-                if poem_idx is not None:
-                    cb_pred = float(self.cb.predict_rating(profile, poem_idx))
-
-        cf_pred = float(self.cf.predict_rating(user_interactions, poem_id))
-        bt_pred = float(self.bt.predict_rating(user_interactions, poem_id)) if self.bt is not None else 3.0
-
-        return float(np.clip(cb_pred * weights["cb"] + cf_pred * weights["item_cf"] + bt_pred * weights["bertopic"], 1.0, 5.0))
+        if self.enhanced_cf is None:
+            return 3.0
+        return float(self.enhanced_cf.predict_rating(user_interactions, poem_id))
 
 
 class Evaluator:
@@ -404,7 +353,7 @@ def run_once(cfg: Config, poems: List[dict], interactions: List[dict]) -> dict:
     models = {
         "Content-Based": {"recommender": cb, "type": "cb"},
         "Item-CF": {"recommender": cf, "type": "cf"},
-        "Hybrid": {"recommender": hybrid, "type": "hybrid"},
+        "BERTopic-Enhanced-CF": {"recommender": hybrid, "type": "enhanced_cf"},
     }
 
     evaluator = Evaluator(poems, cfg.top_k, cfg.threshold)

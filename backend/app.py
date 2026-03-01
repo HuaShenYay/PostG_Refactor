@@ -16,8 +16,9 @@ app.config.from_object(Config)
 CORS(app)
 db.init_app(app)
 
+
 class RecommendationService:
-    """BERTopic-only recommender service with lightweight refresh control."""
+    """BERTopic Enhanced CF recommender service - 融合评分矩阵与主题向量"""
 
     def __init__(self):
         self.recommender = None
@@ -28,9 +29,9 @@ class RecommendationService:
 
     def _ensure_recommender(self):
         if self.recommender is None:
-            from core.bertopic_recommender import BertopicRecommender
+            from core.bertopic_enhanced_cf import BERTopicEnhancedCF
 
-            self.recommender = BertopicRecommender()
+            self.recommender = BERTopicEnhancedCF(rating_weight=0.6, topic_weight=0.4)
 
     @staticmethod
     def _build_interactions():
@@ -178,8 +179,6 @@ def get_poems():
     return jsonify([p.to_dict() for p in poems])
 
 
-
-
 @app.route("/api/topics")
 def get_topics():
     """返回主题列表，供偏好引导页使用"""
@@ -194,8 +193,21 @@ def get_topics():
     sorted_topics = sorted(counter.items(), key=lambda x: x[1], reverse=True)
     if not sorted_topics:
         fallback = [
-            "山水", "思乡", "边塞", "离别", "咏史", "田园", "闺怨", "怀古", "节序", "哲理",
-            "人生", "家国", "送别", "咏物", "写景"
+            "山水",
+            "思乡",
+            "边塞",
+            "离别",
+            "咏史",
+            "田园",
+            "闺怨",
+            "怀古",
+            "节序",
+            "哲理",
+            "人生",
+            "家国",
+            "送别",
+            "咏物",
+            "写景",
         ]
         sorted_topics = [(name, 1) for name in fallback]
 
@@ -204,6 +216,8 @@ def get_topics():
         topics[idx] = [name]
 
     return jsonify(topics)
+
+
 @app.route("/api/poem/<int:poem_id>")
 def get_poem(poem_id):
     poem = Poem.query.get(poem_id)
@@ -365,6 +379,15 @@ def get_single_poem_analysis(poem_id):
                 "sentiment": [
                     {"name": k, "value": v} for k, v in sentiment_scores.items()
                 ],
+                # 情感雷达需要的数据格式 (joy, anger, sorrow, fear, love, zen)
+                "emotions": {
+                    "joy": min(sentiment_scores.get("雄浑", 10) / 5, 10),
+                    "anger": min(sentiment_scores.get("忧思", 10) / 5, 10),
+                    "sorrow": min(sentiment_scores.get("羁旅", 10) / 5, 10),
+                    "fear": min(sentiment_scores.get("忧思", 10) / 5, 10),
+                    "love": min(sentiment_scores.get("闲适", 10) / 5, 10),
+                    "zen": min(sentiment_scores.get("清丽", 10) / 5, 10),
+                },
             },
         }
     )
@@ -374,16 +397,16 @@ def extract_topics_from_comment(comment):
     """从评论中提取主题关键词"""
     import jieba
     import jieba.analyse
-    
+
     # 使用TF-IDF提取关键词
     keywords = jieba.analyse.extract_tags(comment, topK=5, withWeight=True)
-    
+
     # 过滤并格式化
     topic_names = []
     for word, weight in keywords:
         if len(word) >= 2 and weight > 0.1:  # 至少2个字符，权重>0.1
             topic_names.append(word)
-    
+
     return "-".join(topic_names) if topic_names else "未分类"
 
 
@@ -407,12 +430,12 @@ def add_review():
     topic_names = extract_topics_from_comment(comment)
 
     new_review = Review(
-        user_id=user.id, 
-        poem_id=poem_id, 
-        rating=rating, 
-        liked=liked, 
+        user_id=user.id,
+        poem_id=poem_id,
+        rating=rating,
+        liked=liked,
         comment=comment,
-        topic_names=topic_names
+        topic_names=topic_names,
     )
     db.session.add(new_review)
     db.session.commit()
@@ -420,7 +443,7 @@ def add_review():
 
     # 评论成功后，返回基于 Hybrid 模型的推荐
     recommended_poem = None
-    
+
     try:
         # 获取用户的所有评论历史（包括刚提交的）
         user_reviews = Review.query.filter_by(user_id=user.id).all()
@@ -434,14 +457,16 @@ def add_review():
             }
             for r in user_reviews
         ]
-        
+
         # 排除已评论的诗歌
         exclude_ids = {r.poem_id for r in user_reviews}
-        
+
         # 使用 Hybrid 推荐
         all_interactions = rec_service._build_interactions()
-        recs = rec_service.recommender.recommend(user_interactions, all_interactions, top_k=5)
-        
+        recs = rec_service.recommender.recommend(
+            user_interactions, all_interactions, top_k=5
+        )
+
         # 找到第一个未被评论的推荐
         for rec in recs:
             if rec["poem_id"] not in exclude_ids:
@@ -450,24 +475,28 @@ def add_review():
                     recommended_poem = poem.to_dict()
                     recommended_poem["recommend_reason"] = "为你推荐"
                     break
-                
+
     except Exception as e:
         print(f"推荐失败: {e}")
 
     # 如果Hybrid推荐失败，使用回退方案
     if not recommended_poem:
         exclude_ids.add(poem_id)  # 排除刚评论的诗歌
-        fallback = Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
+        fallback = (
+            Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
+        )
         if fallback:
             recommended_poem = fallback.to_dict()
             recommended_poem["recommend_reason"] = "随机推荐"
 
-    return jsonify({
-        "message": "雅评已收录", 
-        "status": "success", 
-        "topics": topic_names,
-        "recommended": recommended_poem
-    })
+    return jsonify(
+        {
+            "message": "雅评已收录",
+            "status": "success",
+            "topics": topic_names,
+            "recommended": recommended_poem,
+        }
+    )
 
 
 def _extract_preference_topic_tokens(user):
@@ -484,7 +513,9 @@ def _extract_preference_topic_tokens(user):
         if isinstance(item, dict):
             raw_keywords = item.get("keywords")
             if isinstance(raw_keywords, list):
-                topic_tokens.extend(str(k).strip() for k in raw_keywords if str(k).strip())
+                topic_tokens.extend(
+                    str(k).strip() for k in raw_keywords if str(k).strip()
+                )
             elif isinstance(raw_keywords, str) and raw_keywords.strip():
                 topic_tokens.append(raw_keywords.strip())
 
@@ -510,7 +541,7 @@ def recommend_one(username):
     user = User.query.filter_by(username=username).first()
     current_id = request.args.get("current_id", type=int)
     skip_count = max(0, request.args.get("skip_count", 0, type=int) or 0)
-    
+
     # 获取用户会话历史（用于避免循环）
     seen_poems = request.args.getlist("seen_ids") or []
     seen_ids = set(int(x) for x in seen_poems if str(x).isdigit())
@@ -544,7 +575,7 @@ def recommend_one(username):
         }
         for r in user_reviews
     ]
-    
+
     # 构建排除列表（已评论 + 本次会话已看）
     exclude_ids = {r.poem_id for r in user_reviews}
     exclude_ids.update(seen_ids)
@@ -554,38 +585,46 @@ def recommend_one(username):
     should_explore = skip_count > 0 and skip_count % explore_frequency == 0
     if should_explore:
         import random
-        
+
         # 策略1a: 获取所有符合条件的诗歌，然后随机选择
-        subquery = db.session.query(
-            Review.poem_id,
-            func.count(Review.id).label('review_count'),
-            func.avg(Review.rating).label('avg_rating')
-        ).group_by(Review.poem_id).subquery()
-        
-        explore_candidates = Poem.query.outerjoin(
-            subquery, Poem.id == subquery.c.poem_id
-        ).filter(
-            ~Poem.id.in_(exclude_ids)
-        ).filter(
-            (subquery.c.review_count < 3) | (subquery.c.review_count.is_(None))
-        ).order_by(
-            func.coalesce(subquery.c.avg_rating, 4.0).desc()
-        ).limit(20).all()
-        
+        subquery = (
+            db.session.query(
+                Review.poem_id,
+                func.count(Review.id).label("review_count"),
+                func.avg(Review.rating).label("avg_rating"),
+            )
+            .group_by(Review.poem_id)
+            .subquery()
+        )
+
+        explore_candidates = (
+            Poem.query.outerjoin(subquery, Poem.id == subquery.c.poem_id)
+            .filter(~Poem.id.in_(exclude_ids))
+            .filter((subquery.c.review_count < 3) | (subquery.c.review_count.is_(None)))
+            .order_by(func.coalesce(subquery.c.avg_rating, 4.0).desc())
+            .limit(20)
+            .all()
+        )
+
         if explore_candidates:
             # 随机选择一首
             explore_poem = random.choice(explore_candidates)
             res = explore_poem.to_dict()
             res["recommend_reason"] = "探索推荐：小众佳作"
             return jsonify(res)
-        
+
         # 策略1b: 推荐从未被评论的诗歌
-        reviewed_poem_ids = {r.poem_id for r in Review.query.with_entities(Review.poem_id).all()}
-        unseen_candidates = Poem.query.filter(
-            ~Poem.id.in_(reviewed_poem_ids),
-            ~Poem.id.in_(exclude_ids)
-        ).limit(20).all()
-        
+        reviewed_poem_ids = {
+            r.poem_id for r in Review.query.with_entities(Review.poem_id).all()
+        }
+        unseen_candidates = (
+            Poem.query.filter(
+                ~Poem.id.in_(reviewed_poem_ids), ~Poem.id.in_(exclude_ids)
+            )
+            .limit(20)
+            .all()
+        )
+
         if unseen_candidates:
             unseen_poem = random.choice(unseen_candidates)
             res = unseen_poem.to_dict()
@@ -626,7 +665,9 @@ def recommend_one(username):
         )
 
         if popular_poems:
-            available_popular = [item[0] for item in popular_poems if item[0].id not in exclude_ids]
+            available_popular = [
+                item[0] for item in popular_poems if item[0].id not in exclude_ids
+            ]
             if available_popular:
                 selected = random.choice(available_popular)
                 res = selected.to_dict()
@@ -634,7 +675,9 @@ def recommend_one(username):
                 return jsonify(res)
 
         # 如果都不行，随机推荐
-        fallback = Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
+        fallback = (
+            Poem.query.filter(~Poem.id.in_(exclude_ids)).order_by(func.rand()).first()
+        )
         if fallback:
             res = fallback.to_dict()
             res["recommend_reason"] = "随机推荐"
@@ -644,43 +687,52 @@ def recommend_one(username):
     try:
         rec_service.refresh_if_needed()
         all_interactions = rec_service._build_interactions()
-        
+
         # 获取候选推荐（扩大候选池到100首）
-        recs = rec_service.recommender.recommend(user_interactions, all_interactions, top_k=100)
-        
+        recs = rec_service.recommender.recommend(
+            user_interactions, all_interactions, top_k=100
+        )
+
         # 过滤已看过的
         candidates = [rec for rec in recs if rec["poem_id"] not in exclude_ids]
-        
+
         # 如果候选少于20首，补充随机推荐
         if len(candidates) < 20:
-            random_poems = Poem.query.filter(
-                ~Poem.id.in_(exclude_ids),
-                ~Poem.id.in_([r["poem_id"] for r in candidates])
-            ).order_by(func.rand()).limit(30).all()
+            random_poems = (
+                Poem.query.filter(
+                    ~Poem.id.in_(exclude_ids),
+                    ~Poem.id.in_([r["poem_id"] for r in candidates]),
+                )
+                .order_by(func.rand())
+                .limit(30)
+                .all()
+            )
             for p in random_poems:
                 candidates.append({"poem_id": p.id, "score": 0.5})
-        
+
         # 随机选择（增加时间和用户ID的随机性）
         if candidates:
             import random
             import time
+
             # 使用时间戳+用户ID+skip_count作为种子
             random.seed(int(time.time() * 1000) % 10000 + user.id + skip_count)
-            
+
             # 从前20个候选中随机选择（如果候选少于20个则全部）
             pool_size = min(20, len(candidates))
             selected_idx = random.randint(0, pool_size - 1)
             selected = candidates[selected_idx]
-            
+
             poem = Poem.query.get(selected["poem_id"])
             if poem:
                 res = poem.to_dict()
                 res["recommend_reason"] = "为你推荐"
                 return jsonify(res)
-                
+
     except Exception as e:
         print(f"Recommend error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # ========== 最终回退：完全随机 ==========
@@ -688,12 +740,12 @@ def recommend_one(username):
     if exclude_ids:
         fallback_query = fallback_query.filter(~Poem.id.in_(exclude_ids))
     fallback = fallback_query.order_by(func.rand()).first()
-    
+
     if fallback:
         res = fallback.to_dict()
         res["recommend_reason"] = "随机发现"
         return jsonify(res)
-    
+
     # 如果所有诗歌都看过，重置并随机推荐
     fallback = Poem.query.order_by(func.rand()).first()
     if fallback:
@@ -800,7 +852,7 @@ def get_global_stats():
 def get_popular_poems():
     try:
         time_range = request.args.get("time_range", "all")
-        
+
         from sqlalchemy import func as sql_func
         from datetime import datetime, timedelta
 
@@ -817,7 +869,9 @@ def get_popular_poems():
 
         # 统计每首诗的评论数量
         review_counts = (
-            base_query.with_entities(Review.poem_id, sql_func.count(Review.id).label("count"))
+            base_query.with_entities(
+                Review.poem_id, sql_func.count(Review.id).label("count")
+            )
             .group_by(Review.poem_id)
             .all()
         )
@@ -827,9 +881,11 @@ def get_popular_poems():
 
         # 获取所有诗歌，按评论数排序
         poems = Poem.query.all()
-        
+
         # 按评论数排序
-        sorted_poems = sorted(poems, key=lambda p: count_map.get(p.id, 0), reverse=True)[:10]
+        sorted_poems = sorted(
+            poems, key=lambda p: count_map.get(p.id, 0), reverse=True
+        )[:10]
 
         result = []
         for poem in sorted_poems:
@@ -849,6 +905,7 @@ def get_popular_poems():
         return jsonify(result)
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         return jsonify({"error": f"获取热门诗歌失败: {str(e)}"}), 500
 
@@ -875,14 +932,16 @@ def get_theme_distribution():
                     themes = topic_data.split()
                 else:
                     themes = [topic_data]
-                
+
                 for t in themes:
                     t = t.strip()
                     if t and t != "未知":
                         theme_counts[t] = theme_counts.get(t, 0) + 1
 
         result = []
-        for theme, count in sorted(theme_counts.items(), key=lambda x: x[1], reverse=True):
+        for theme, count in sorted(
+            theme_counts.items(), key=lambda x: x[1], reverse=True
+        ):
             result.append({"name": theme, "value": count})
 
         # 如果没有评论数据，返回默认数据
@@ -898,6 +957,7 @@ def get_theme_distribution():
         return jsonify(result)
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         return jsonify({"error": f"获取主题分布失败: {str(e)}"}), 500
 
@@ -1239,21 +1299,45 @@ def get_user_time_analysis(username):
 
         # 中国传统十二时辰
         time_periods = [
-            ("子时", 23, 1), ("丑时", 1, 3), ("寅时", 3, 5), ("卯时", 5, 7),
-            ("辰时", 7, 9), ("巳时", 9, 11), ("午时", 11, 13), ("未时", 13, 15),
-            ("申时", 15, 17), ("酉时", 17, 19), ("戌时", 19, 21), ("亥时", 21, 23)
+            ("子时", 23, 1),
+            ("丑时", 1, 3),
+            ("寅时", 3, 5),
+            ("卯时", 5, 7),
+            ("辰时", 7, 9),
+            ("巳时", 9, 11),
+            ("午时", 11, 13),
+            ("未时", 13, 15),
+            ("申时", 15, 17),
+            ("酉时", 17, 19),
+            ("戌时", 19, 21),
+            ("亥时", 21, 23),
         ]
 
         # 合并到时辰
         period_counts = {name: 0 for name, _, _ in time_periods}
         for hour, count in hour_counts.items():
             for name, start, end in time_periods:
-                if start <= hour < end or (start > end and (hour >= start or hour < end)):
+                if start <= hour < end or (
+                    start > end and (hour >= start or hour < end)
+                ):
                     period_counts[name] += count
                     break
 
         # 转换为前端需要的格式（按传统顺序）
-        ordered_periods = ["子时", "丑时", "寅时", "卯时", "辰时", "巳时", "午时", "未时", "申时", "酉时", "戌时", "亥时"]
+        ordered_periods = [
+            "子时",
+            "丑时",
+            "寅时",
+            "卯时",
+            "辰时",
+            "巳时",
+            "午时",
+            "未时",
+            "申时",
+            "酉时",
+            "戌时",
+            "亥时",
+        ]
         insights = []
         for period in ordered_periods:
             count = period_counts.get(period, 0)
