@@ -82,17 +82,14 @@ class BERTopicEnhancedCF:
         print("[BERTopicEnhancedCF] 计算User-CF相似度...")
         self._compute_user_similarity()
         
-        print("[BERTopicEnhancedCF] 计算混合用户相似度 (Top-K + 置信度过滤)...")
-        self._compute_hybrid_user_similarity()
-        
-        print("[BERTopicEnhancedCF] 训练BERTopic模型...")
-        self._compute_user_similarity()
-        
         print("[BERTopicEnhancedCF] 训练BERTopic模型...")
         from .bertopic_recommender import BertopicRecommender
         self.bertopic = BertopicRecommender()
         self.bertopic.fit(poems, interactions)
-        
+
+        print("[BERTopicEnhancedCF] 计算混合用户相似度 (Top-K + 置信度过滤)...")
+        self._compute_hybrid_user_similarity()
+
         print("[BERTopicEnhancedCF] 计算增强相似度矩阵...")
         self._compute_enhanced_similarity()
         
@@ -201,7 +198,7 @@ class BERTopicEnhancedCF:
         
         item_sim = self.item_similarity
         
-        if self.bertopic.topic_matrix is not None:
+        if self.bertopic is not None and self.bertopic.topic_matrix is not None:
             topic_sim = cosine_similarity(self.bertopic.topic_matrix)
         else:
             topic_sim = np.zeros((n_items, n_items))
@@ -231,7 +228,7 @@ class BERTopicEnhancedCF:
         rating_sim = self.user_similarity.copy()
         
         # 2. Topic-based similarity
-        if self.bertopic.topic_matrix is not None:
+        if self.bertopic is not None and self.bertopic.topic_matrix is not None:
             # 构建用户主题向量: 用户评分过的物品的主题向量加权平均
             user_topic_vectors = np.zeros((n_users, self.bertopic.topic_matrix.shape[1]))
             
