@@ -31,7 +31,11 @@ class RecommendationService:
         if self.recommender is None:
             from core.bertopic_enhanced_cf import BERTopicEnhancedCF
 
-            self.recommender = BERTopicEnhancedCF(rating_weight=0.6, topic_weight=0.4)
+            self.recommender = BERTopicEnhancedCF(
+                item_cf_weight=0.5, 
+                user_cf_weight=0.3, 
+                topic_weight=0.2
+            )
 
     @staticmethod
     def _build_interactions():
