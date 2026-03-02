@@ -32,9 +32,11 @@ class RecommendationService:
             from core.bertopic_enhanced_cf import BERTopicEnhancedCF
 
             self.recommender = BERTopicEnhancedCF(
-                item_cf_weight=0.5, 
-                user_cf_weight=0.3, 
-                topic_weight=0.2
+                cf_weight=0.35,
+                semantic_weight=0.65,
+                n_neighbors=30,
+                fast_min_ratings=10,
+                fast_min_interactions=3000,
             )
 
     @staticmethod
