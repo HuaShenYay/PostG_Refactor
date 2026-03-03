@@ -82,7 +82,7 @@
                 <div class="results-grid">
                     <div v-for="poem in searchResults" :key="poem.id" class="poem-card-minimal glass-card" @click="goToPoem(poem.id)">
                         <div class="p-header">
-                            <h3 class="p-title">{{ poem.title }}</h3>
+                            <h3 class="p-title">{{ getPoemTitle(poem) }}</h3>
                             <n-tag :bordered="false" type="error" size="small" class="p-dynasty">{{ poem.dynasty }}</n-tag>
                         </div>
                         <span class="p-author">{{ poem.author }}</span>
@@ -143,6 +143,20 @@ const goToPoem = (id) => router.push(`/?poemId=${id}`)
 const logout = () => {
   localStorage.removeItem('user')
   router.push('/login')
+}
+
+// 获取诗歌的正确标题（根据类型）
+const getPoemTitle = (poem) => {
+  // 宋词：词牌名 + 标题
+  if (poem.rhythmic && poem.title) {
+    return `${poem.rhythmic} · ${poem.title}`
+  }
+  // 诗经：章节 + 标题
+  if (poem.chapter && poem.section) {
+    return `${poem.chapter} · ${poem.section} · ${poem.title}`
+  }
+  // 唐诗：直接返回标题
+  return poem.title || '无题'
 }
 
 // 防抖函数实现

@@ -315,6 +315,8 @@ class SentenceTransformerEnhancedCF:
 
     def _build_embeddings(self, poems: Sequence[dict]) -> None:
         import hashlib
+        import time
+        import os
         
         emb_path = os.path.join(self.cache_dir, "sem_embeddings.npy")
         ids_path = os.path.join(self.cache_dir, "sem_ids.json")
@@ -367,9 +369,59 @@ class SentenceTransformerEnhancedCF:
             except Exception:
                 pass
 
-            model = SentenceTransformer(
-                "paraphrase-multilingual-MiniLM-L12-v2", device=device
-            )
+            # 设置HuggingFace镜像源，解决中国网络问题
+            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            os.environ["TRANSFORMERS_OFFLINE"] = "0"
+            os.environ["HF_HUB_OFFLINE"] = "0"
+            
+            # 模型名称
+            model_name = "BAAI/bge-small-zh-v1.5"
+            
+            # 模型加载超时和重试机制
+            max_retries = 3
+            retry_delay = 5  # 秒
+            model = None
+            
+            for attempt in range(max_retries):
+                try:
+                    print(f"[SentenceTransformer] 尝试加载模型 (尝试 {attempt + 1}/{max_retries})...")
+                    print(f"[SentenceTransformer] 使用镜像源: {os.environ.get('HF_ENDPOINT')}")
+                    # 使用本地缓存的模型
+                    local_model_path = os.path.join(self.cache_dir, "bge-small-zh-v1.5")
+                    print(f"[SentenceTransformer] 使用本地模型: {local_model_path}")
+                    
+                    # 检查本地模型是否存在
+                    if os.path.exists(local_model_path):
+                        model = SentenceTransformer(
+                            local_model_path, 
+                            device=device,
+                            use_auth_token=False
+                        )
+                        print("[SentenceTransformer] 从本地加载模型成功!")
+                    else:
+                        # 本地模型不存在，从镜像源下载
+                        print(f"[SentenceTransformer] 本地模型不存在，从镜像源下载: {model_name}")
+                        model = SentenceTransformer(
+                            model_name, 
+                            device=device,
+                            use_auth_token=False
+                        )
+                        print("[SentenceTransformer] 模型下载成功!")
+                        # 保存模型到本地
+                        model.save(local_model_path)
+                        print(f"[SentenceTransformer] 模型保存到本地: {local_model_path}")
+                    break
+                except Exception as e:
+                    print(f"[SentenceTransformer] 模型加载失败: {e}")
+                    if attempt < max_retries - 1:
+                        print(f"[SentenceTransformer] {retry_delay}秒后重试...")
+                        time.sleep(retry_delay)
+                    else:
+                        print("[SentenceTransformer] 所有尝试均失败，使用备用方案...")
+                        # 备用方案：使用本地缓存的嵌入
+                        self.item_embeddings = None
+                        return
+
             contents = [p.get("content", "") for p in poems]
             self.item_embeddings = model.encode(
                 contents,
@@ -386,7 +438,8 @@ class SentenceTransformerEnhancedCF:
                 json.dump(content_hash, f)
             with open(ids_path, "w", encoding="utf-8") as f:
                 json.dump(self.poem_ids, f, ensure_ascii=False)
-        except Exception:
+        except Exception as e:
+            print(f"[SentenceTransformer] 嵌入生成失败: {e}")
             self.item_embeddings = None
 
     def _build_cf_similarity(self) -> None:

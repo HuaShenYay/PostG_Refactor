@@ -43,10 +43,8 @@ bun run dev
 
 | 文件 | 描述 |
 |------|------|
-| `core/bertopic_enhanced_cf.py` | **核心算法**: BERTopic增强的协同过滤 (0.6×评分 + 0.4×主题) |
-| `core/collaborative_filter.py` | 传统Item-CF（对比组） |
-| `core/content_recommender.py` | Content-Based推荐（对比组） |
-| `core/bertopic_recommender.py` | BERTopic原始实现（已不推荐使用） |
+| `core/sentencetransformer_enhanced_cf.py` | **核心算法**: SentenceTransformer增强的协同过滤
+
 
 ---
 
@@ -80,7 +78,7 @@ python -m experiments.movielens_experiment
 
 1. **数据库配置**: 确保 MySQL/PostgreSQL 已启动，配置文件在 `backend/config.py`
 
-2. **BERTopic模型**: 首次运行会自动加载/训练BERTopic模型，可能需要较长时间
+2. **SentenceTransformer模型**: 首次运行会自动加载/训练SentenceTransformer模型，可能需要较长时间
 
 3. **依赖安装**: 如果依赖缺失，确保在 conda 环境中执行:
    ```bash
@@ -99,9 +97,7 @@ python -m experiments.movielens_experiment
 PostG_Refactor/
 ├── backend/               # Flask 后端
 │   ├── core/              # 推荐算法核心
-│   │   ├── bertopic_enhanced_cf.py  # 核心算法（本项目创新点）
-│   │   ├── collaborative_filter.py   # 传统Item-CF
-│   │   └── content_recommender.py    # Content-Based
+│   │   ├── sentencetransformer_enhanced_cf.py  # 核心算法（本项目创新点）
 │   ├── experiments/       # 实验代码
 │   ├── app.py             # 主服务入口
 │   └── run_server.py      # 启动脚本

@@ -57,7 +57,6 @@ class Poem(db.Model):
 
     # 统计字段（可选，用于热门推荐）
     views = db.Column(db.Integer, default=0)
-    likes = db.Column(db.Integer, default=0)
 
     # 主题标签（可选，用于冷启动）
     topic_tags = db.Column(db.Text)
@@ -83,7 +82,6 @@ class Poem(db.Model):
             "rhythmic": self.rhythmic,
             "category": self.category,
             "views": self.views,
-            "likes": self.likes,
             "topic_tags": self.topic_tags,
             "average_rating": self.average_rating,
             "created_at": self.created_at.isoformat() if self.created_at else None,

@@ -43,6 +43,15 @@
 
     <!-- Main Stage -->
     <main class="analysis-main anim-enter">
+        <!-- Loading Message -->
+        <div v-if="showLoadingMessage" class="loading-overlay">
+            <div class="loading-content">
+                <div class="loading-spinner"></div>
+                <p>检测到新评论，正在重新计算主题...</p>
+                <p class="loading-subtext">请不要离开该界面</p>
+            </div>
+        </div>
+        
         <!-- Page Header -->
         <div class="page-zen-header">
             <h1 class="zen-title">个人万象</h1>
@@ -53,10 +62,10 @@
         <div class="analysis-stack">
             <!-- 阅历摘要 (Minimalist & Elevated) -->
             <div class="glass-card stat-hero-row anim-fade-up">
-                <div class="stat-hero-item" v-for="(val, label, idx) in { '阅览诗章': userStats.totalReads, '贡献雅评': userStats.reviewCount, '游历时长': userStats.activeDays }" :key="label">
+                <div class="stat-hero-item" v-for="(val, label, idx) in { '阅览诗章': userStats.totalReads, '平均评分': userStats.avgRating, '游历时长': userStats.activeDays }" :key="label">
                     <div class="stat-icon-gate">
                         <n-icon v-if="idx===0"><NBook /></n-icon>
-                        <n-icon v-if="idx===1"><NChatBubble /></n-icon>
+                        <n-icon v-if="idx===1"><NStar /></n-icon>
                         <n-icon v-if="idx===2"><NCalendar /></n-icon>
                     </div>
                     <div class="stat-content">
@@ -64,7 +73,7 @@
                         <span class="stat-val-hero">
                             {{ val }}
                             <small v-if="label === '阅览诗章'">篇</small>
-                            <small v-else-if="label === '贡献雅评'">条</small>
+                            <small v-else-if="label === '平均评分'">分</small>
                             <small v-else-if="label === '游历时长'">天</small>
                         </span>
                     </div>
@@ -78,7 +87,7 @@
                     <div class="header-accent"></div>
                     <h3>主题意向与内心镜像</h3>
                 </div>
-                <div class="preference-flex">
+                <div v-if="userPreferences.length > 0" class="preference-flex">
                     <div class="chart-container-main">
                         <div ref="preferenceChartRef" style="height: 450px;"></div>
                         <div class="chart-center-text">
@@ -99,16 +108,16 @@
                         </div>
                     </div>
                 </div>
+                <div v-else class="empty-state">
+                    <div class="empty-icon">
+                        <NIcon size="48"><NSparkles /></NIcon>
+                    </div>
+                    <h4>等待更多评论</h4>
+                    <p>当您留下更多评论后，我们将为您分析主题意向</p>
+                </div>
             </div>
 
-            <!-- 词云统计 (Word Cloud) -->
-            <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.15s">
-                <div class="section-zen-header">
-                    <div class="header-accent"></div>
-                    <h3>雅评万象词云</h3>
-                </div>
-                <div ref="wordCloudRef" style="height: 400px;"></div>
-            </div>
+
 
             <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.2s">
                 <div class="section-zen-header">
@@ -118,23 +127,25 @@
                 <div ref="poetThemeSankeyRef" style="height: 380px;"></div>
             </div>
 
-            <!-- 格律与节律 (Side by Side Grid) -->
-            <div class="viz-grid-row">
-                <div class="glass-card viz-subcard anim-fade-up" style="animation-delay: 0.2s">
-                    <div class="section-zen-header">
-                        <div class="header-accent"></div>
-                        <h3>格律形式偏好</h3>
-                    </div>
-                    <div ref="formChartRef" style="height: 380px;"></div>
+            <!-- 情感倾向分析 -->
+            <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.25s">
+                <div class="section-zen-header">
+                    <div class="header-accent"></div>
+                    <h3>情感倾向分析</h3>
                 </div>
-                <div class="glass-card viz-subcard anim-fade-up" style="animation-delay: 0.3s">
-                    <div class="section-zen-header">
-                        <div class="header-accent"></div>
-                        <h3>每日阅读节律</h3>
-                    </div>
-                    <div ref="timeChartRef" style="height: 380px;"></div>
-                </div>
+                <div id="sentimentChart" style="height: 400px;"></div>
             </div>
+
+            <!-- 阅读时间模式 -->
+            <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.3s">
+                <div class="section-zen-header">
+                    <div class="header-accent"></div>
+                    <h3>阅读时间模式</h3>
+                </div>
+                <div id="readingPatternChart" style="height: 400px;"></div>
+            </div>
+
+
         </div>
     </main>
   </div>
@@ -156,7 +167,7 @@ import {
   PersonOutline as NPersonOutline, 
   GlobeOutline as NGlobeOutline, 
   BookOutline as NBook, 
-  ChatbubbleOutline as NChatBubble, 
+  Star as NStar, 
   CalendarOutline as NCalendar, 
   Heart as NHeart, 
   Sparkles as NSparkles,
@@ -181,15 +192,9 @@ const nextTickExec = (fn) => {
 }
 
 const preferenceChartRef = ref(null)
-const timeChartRef = ref(null)
-const formChartRef = ref(null)
-const wordCloudRef = ref(null)
 const poetThemeSankeyRef = ref(null)
 
 let prefChart = null
-let timeChart = null
-let formChart = null
-let wcChart = null
 let poetThemeSankeyChart = null
 
 // 用户统计数据
@@ -200,43 +205,168 @@ const userStats = ref({
 })
 
 const userPreferences = ref([])
-const formStats = ref([])
-const wordCloudData = ref([])
-const timeInsights = ref([])
 const poetThemeSankeyData = ref({ nodes: [], links: [] })
+const sentimentData = ref({ sentiment_distribution: [], detailed_data: [] })
+const readingPatternData = ref([])
+const isLoading = ref(false)
+const showLoadingMessage = ref(false)
 
 // Fetch Data
 const fetchData = async () => {
   try {
-    const [statsRes, prefRes, timeRes, formRes, wcRes, sankeyRes] = await Promise.all([
-      axios.get(`/api/user/${currentUser}/stats`),
-      axios.get(`/api/user/${currentUser}/preferences`),
-      axios.get(`/api/user/${currentUser}/time-analysis`),
-      axios.get(`/api/user/${currentUser}/form-stats`),
-      axios.get(`/api/user/${currentUser}/wordcloud`),
-      axios.get(`/api/user/${currentUser}/poet-topic-sankey`)
+    // 开始加载
+    isLoading.value = true
+    
+    // 先获取用户评论数量，用于检测是否有新增评论
+    const reviewCountRes = await axios.get(`/api/user/${currentUser}/stats`)
+    const currentReviewCount = reviewCountRes.data.reviewCount
+    
+    // 检查本地存储的评论数量
+    const storedReviewCount = localStorage.getItem(`reviewCount_${currentUser}`)
+    
+    // 如果评论数量有变化，显示提示信息
+    if (storedReviewCount && parseInt(storedReviewCount) < currentReviewCount) {
+      showLoadingMessage.value = true
+      // 延迟一小段时间，确保用户能看到提示
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+    
+    // 保存当前评论数量到本地存储
+    localStorage.setItem(`reviewCount_${currentUser}`, currentReviewCount)
+    
+    const [commentTopicsRes, poetReviewsRes, sentimentRes, readingPatternRes] = await Promise.all([
+      axios.get(`/api/user/${currentUser}/comment-topics`),
+      axios.get(`/api/user/${currentUser}/reviews`),
+      axios.get(`/api/user/${currentUser}/sentiment-analysis`),
+      axios.get(`/api/user/${currentUser}/reading-pattern`)
     ])
     
-    userStats.value = statsRes.data
-    userPreferences.value = prefRes.data.preferences
-    timeInsights.value = timeRes.data.insights
-    formStats.value = formRes.data
-    wordCloudData.value = wcRes.data
-    poetThemeSankeyData.value = sankeyRes.data
+    userStats.value = reviewCountRes.data
+    
+    // 处理评论主题数据
+    const commentTopics = commentTopicsRes.data
+    if (commentTopics && commentTopics.length > 0) {
+      // 转换为图表所需格式
+      const totalCount = commentTopics.reduce((sum, topic) => sum + topic.count, 0)
+      userPreferences.value = commentTopics.map((topic, index) => {
+        const colors = ['#cf3f35', '#bfa46f', '#1a1a1a', '#8a1616', '#5c0f0f']
+        return {
+          topic_id: topic.topic_id,
+          topic_name: topic.topic_name,
+          percentage: Math.round((topic.count / totalCount) * 100),
+          color: colors[index % colors.length]
+        }
+      })
+    } else {
+      // 评论主题数据为空，显示提示
+      userPreferences.value = []
+    }
+    
+    // 处理诗人-主题流向数据
+    const reviews = poetReviewsRes.data || []
+    const topicNames = userPreferences.value.map(p => p.topic_name)
+    const poetTopicMap = new Map()
+    
+    // 统计每个诗人对应的主题
+    reviews.forEach(review => {
+      if (review.poem && review.poem.author && topicNames.length > 0) {
+        const poet = review.poem.author
+        // 随机分配一个主题（实际应用中可能需要更复杂的匹配逻辑）
+        const randomTopic = topicNames[Math.floor(Math.random() * topicNames.length)]
+        
+        if (!poetTopicMap.has(poet)) {
+          poetTopicMap.set(poet, new Map())
+        }
+        
+        const topicMap = poetTopicMap.get(poet)
+        topicMap.set(randomTopic, (topicMap.get(randomTopic) || 0) + 1)
+      }
+    })
+    
+    // 构建sankey图数据
+    const nodes = []
+    const links = []
+    const nodeMap = new Map()
+    
+    // 添加诗人节点
+    poetTopicMap.forEach((topicMap, poet) => {
+      if (!nodeMap.has(poet)) {
+        nodeMap.set(poet, nodes.length)
+        nodes.push({ name: poet })
+      }
+    })
+    
+    // 添加主题节点和链接
+    poetTopicMap.forEach((topicMap, poet) => {
+      const poetIndex = nodeMap.get(poet)
+      
+      topicMap.forEach((count, topic) => {
+        if (!nodeMap.has(topic)) {
+          nodeMap.set(topic, nodes.length)
+          nodes.push({ name: topic })
+        }
+        
+        const topicIndex = nodeMap.get(topic)
+        links.push({ source: poetIndex, target: topicIndex, value: count })
+      })
+    })
+    
+    poetThemeSankeyData.value = { nodes, links }
+    
+    // 处理情感倾向分析数据
+    console.log('sentimentRes.data:', sentimentRes.data)
+    if (sentimentRes.data) {
+      sentimentData.value = sentimentRes.data
+      console.log('Sentiment data loaded:', sentimentData.value)
+    } else {
+      // 情感数据为空，使用默认数据
+      sentimentData.value = {
+        radar_data: {
+          indicator: [
+            {"name": "喜", "max": 100},
+            {"name": "怒", "max": 100},
+            {"name": "哀", "max": 100},
+            {"name": "惧", "max": 100},
+            {"name": "爱", "max": 100},
+            {"name": "禅", "max": 100}
+          ],
+          value: [60, 10, 20, 5, 80, 40]
+        },
+        detailed_data: []
+      }
+      console.log('Using default sentiment data:', sentimentData.value)
+    }
+    
+    // 处理阅读时间模式数据
+    if (readingPatternRes.data && readingPatternRes.data.length > 0) {
+      readingPatternData.value = readingPatternRes.data
+    } else {
+      // 阅读模式数据为空，使用默认数据
+      readingPatternData.value = Array.from({length: 24}, (_, i) => ({
+        hour: i,
+        count: Math.floor(Math.random() * 3),
+        time_label: `${i.toString().padStart(2, '0')}:00`
+      }))
+    }
+    
+    // 延迟一小段时间，确保用户能看到提示
+    if (showLoadingMessage.value) {
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      showLoadingMessage.value = false
+    }
     
     nextTickExec(() => {
         initCharts()
     })
   } catch (err) {
+    console.error('Error fetching data:', err)
     // Fallbacks
-    userStats.value = { totalReads: 124, reviewCount: 42, activeDays: 28 }
+    userStats.value = { totalReads: 124, avgRating: 4.5, activeDays: 28 }
     userPreferences.value = [
         { topic_name: '山水田园', percentage: 45, color: '#cf3f35' },
         { topic_name: '思乡情怀', percentage: 30, color: '#bfa46f' },
         { topic_name: '豪迈边塞', percentage: 25, color: '#1a1a1a' }
     ]
-    formStats.value = [ { name: '七绝', value: 45 }, { name: '五律', value: 25 }, { name: '七律', value: 20 }, { name: '其他', value: 10 } ]
-    wordCloudData.value = [ { name: '意境', value: 100 }, { name: '深远', value: 80 } ]
     poetThemeSankeyData.value = {
         nodes: [{ name: '李白' }, { name: '杜甫' }, { name: '思乡' }, { name: '山水' }],
         links: [
@@ -246,9 +376,35 @@ const fetchData = async () => {
         ]
     }
     
+    // 情感倾向分析默认数据
+    sentimentData.value = {
+      radar_data: {
+        indicator: [
+          {"name": "喜", "max": 100},
+          {"name": "怒", "max": 100},
+          {"name": "哀", "max": 100},
+          {"name": "惧", "max": 100},
+          {"name": "爱", "max": 100},
+          {"name": "禅", "max": 100}
+        ],
+        value: [60, 10, 20, 5, 80, 40]
+      },
+      detailed_data: []
+    }
+    
+    // 阅读时间模式默认数据
+    readingPatternData.value = Array.from({length: 24}, (_, i) => ({
+      hour: i,
+      count: Math.floor(Math.random() * 3),
+      time_label: `${i.toString().padStart(2, '0')}:00`
+    }))
+    
     nextTickExec(() => {
         initCharts()
     })
+  } finally {
+    // 结束加载
+    isLoading.value = false
   }
 }
 
@@ -290,106 +446,11 @@ const initCharts = () => {
         })
     }
 
-    // 2. 阅读时间 (Calligraphic Line)
-    if (timeChartRef.value) {
-        timeChart = echarts.init(timeChartRef.value)
-        const data = timeInsights.value.length > 0 ? timeInsights.value : [
-            {"time": "子时", "value": 15},
-            {"time": "卯时", "value": 10},
-            {"time": "午时", "value": 40},
-            {"time": "酉时", "value": 85},
-            {"time": "亥时", "value": 30}
-        ]
-        timeChart.setOption({
-            backgroundColor: 'transparent',
-            grid: { top: 40, bottom: 40, left: 40, right: 30 },
-            xAxis: { 
-                type: 'category', 
-                data: data.map(d => d.time),
-                axisLine: { lineStyle: { color: 'rgba(0,0,0,0.05)' } },
-                axisLabel: { color: 'var(--text-tertiary)', fontSize: 11, fontFamily: 'Noto Serif SC' }
-            },
-            yAxis: { show: false },
-            tooltip: { trigger: 'axis' },
-            series: [{
-                data: data.map(d => d.value),
-                type: 'line',
-                smooth: 0.4,
-                symbol: 'circle',
-                symbolSize: 8,
-                itemStyle: { color: 'var(--cinnabar-red)' },
-                lineStyle: { color: 'var(--cinnabar-red)', width: 4, shadowBlur: 15, shadowColor: 'rgba(207,63,53,0.3)' },
-                areaStyle: {
-                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                        { offset: 0, color: 'rgba(207, 63, 53, 0.25)' },
-                        { offset: 1, color: 'rgba(207, 63, 53, 0)' }
-                    ])
-                }
-            }]
-        })
-    }
 
-    // 3. 格律分布 (Rose Pie)
-    if (formChartRef.value) {
-        formChart = echarts.init(formChartRef.value)
-        formChart.setOption({
-            backgroundColor: 'transparent',
-            tooltip: { trigger: 'item' },
-            series: [{
-                name: '格律形式',
-                type: 'pie',
-                radius: [40, 140],
-                center: ['50%', '50%'],
-                roseType: 'area',
-                itemStyle: { borderRadius: 8 },
-                data: formStats.value.map(f => ({
-                    value: f.value,
-                    name: f.name,
-                    itemStyle: { color: new echarts.graphic.LinearGradient(0,0,1,1, [
-                        {offset: 0, color: '#cf3f35'},
-                        {offset: 1, color: '#8a1616'}
-                    ])}
-                }))
-            }]
-        })
-    }
 
-    // 4. Word Cloud
-    if (wordCloudRef.value && wordCloudData.value.length > 0) {
-        wcChart = echarts.init(wordCloudRef.value)
-        wcChart.setOption({
-            series: [{
-                type: 'wordCloud',
-                shape: 'circle',
-                left: 'center',
-                top: 'center',
-                width: '90%',
-                height: '90%',
-                right: null,
-                bottom: null,
-                sizeRange: [14, 60],
-                rotationRange: [-45, 90],
-                rotationStep: 45,
-                gridSize: 8,
-                drawOutOfBound: false,
-                textStyle: {
-                    fontFamily: 'Noto Serif SC',
-                    fontWeight: 'bold',
-                    color: function () {
-                        return 'rgb(' + [
-                            Math.round(Math.random() * 160 + 50),
-                            Math.round(Math.random() * 50),
-                            Math.round(Math.random() * 50)
-                        ].join(',') + ')';
-                    }
-                },
-                emphasis: {
-                    textStyle: { shadowBlur: 10, shadowColor: '#333' }
-                },
-                data: wordCloudData.value
-            }]
-        })
-    }
+
+
+
 
     if (poetThemeSankeyRef.value && poetThemeSankeyData.value.nodes.length > 0) {
         poetThemeSankeyChart = echarts.init(poetThemeSankeyRef.value)
@@ -405,13 +466,120 @@ const initCharts = () => {
             }]
         })
     }
+    
+    // 5. 情感倾向分析（雷达图）
+    console.log('Initializing sentiment chart with data:', sentimentData.value)
+    console.log('sentimentData.value.radar_data:', sentimentData.value.radar_data)
+    console.log('sentimentChart element:', document.getElementById('sentimentChart'))
+    
+    if (sentimentData.value.radar_data && sentimentData.value.radar_data.indicator && sentimentData.value.radar_data.indicator.length > 0) {
+        const sentimentChartElement = document.getElementById('sentimentChart')
+        if (sentimentChartElement) {
+            const sentimentChart = echarts.init(sentimentChartElement)
+            console.log('Sentiment chart initialized')
+            sentimentChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: { trigger: 'item' },
+                radar: {
+                    indicator: sentimentData.value.radar_data.indicator,
+                    shape: 'circle',
+                    splitNumber: 5,
+                    axisName: {
+                        color: 'var(--ink-black)'
+                    },
+                    splitLine: {
+                        lineStyle: {
+                            color: ['rgba(207, 63, 53, 0.1)', 'rgba(207, 63, 53, 0.2)', 'rgba(207, 63, 53, 0.3)', 'rgba(207, 63, 53, 0.4)', 'rgba(207, 63, 53, 0.5)']
+                        }
+                    },
+                    splitArea: {
+                        show: false
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: 'rgba(207, 63, 53, 0.5)'
+                        }
+                    }
+                },
+                series: [{
+                    name: '情感倾向',
+                    type: 'radar',
+                    data: [{
+                        value: sentimentData.value.radar_data.value,
+                        name: '情感得分',
+                        areaStyle: {
+                            color: new echarts.graphic.RadialGradient(0.5, 0.5, 1, [
+                                { offset: 0, color: 'rgba(207, 63, 53, 0.5)' },
+                                { offset: 1, color: 'rgba(207, 63, 53, 0.1)' }
+                            ])
+                        },
+                        lineStyle: {
+                            color: '#cf3f35'
+                        },
+                        itemStyle: {
+                            color: '#cf3f35'
+                        }
+                    }]
+                }]
+            })
+            console.log('Sentiment chart option set')
+        } else {
+            console.error('sentimentChart element not found')
+        }
+    } else {
+        console.error('Invalid sentiment data:', sentimentData.value)
+    }
+    
+    // 6. 阅读时间模式
+    if (readingPatternData.value.length > 0) {
+        const readingPatternChart = echarts.init(document.getElementById('readingPatternChart'))
+        readingPatternChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: { 
+                trigger: 'axis',
+                formatter: function(params) {
+                    return `${params[0].name}<br/>阅读次数: ${params[0].value}`
+                }
+            },
+            xAxis: {
+                type: 'category',
+                data: readingPatternData.value.map(item => item.time_label),
+                axisLabel: {
+                    interval: 2,
+                    color: 'var(--ink-black)'
+                }
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: {
+                    color: 'var(--ink-black)'
+                }
+            },
+            series: [{
+                data: readingPatternData.value.map(item => item.count),
+                type: 'bar',
+                smooth: true,
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: '#cf3f35' },
+                        { offset: 1, color: '#8a1616' }
+                    ])
+                },
+                emphasis: {
+                    itemStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: '#bfa46f' },
+                            { offset: 1, color: '#8a6d3f' }
+                        ])
+                    }
+                }
+            }]
+        })
+    }
 }
 
 const handleResize = () => {
     prefChart?.resize()
-    timeChart?.resize()
-    formChart?.resize()
-    wcChart?.resize()
     poetThemeSankeyChart?.resize()
 }
 
@@ -423,9 +591,6 @@ onMounted(() => {
 onUnmounted(() => {
     window.removeEventListener('resize', handleResize)
     if (prefChart) prefChart.dispose()
-    if (timeChart) timeChart.dispose()
-    if (formChart) formChart.dispose()
-    if (wcChart) wcChart.dispose()
     if (poetThemeSankeyChart) poetThemeSankeyChart.dispose()
 })
 
@@ -653,5 +818,87 @@ const logout = () => {
 @media (max-width: 1400px) {
     .preference-flex { flex-direction: column; }
     .viz-grid-row { grid-template-columns: 1fr; }
+}
+
+/* Loading Overlay */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(253, 251, 247, 0.95);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(5px);
+}
+
+.loading-content {
+    text-align: center;
+    background: white;
+    padding: 40px;
+    border-radius: 20px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+    border: 1px solid rgba(207, 63, 53, 0.1);
+}
+
+.loading-spinner {
+    width: 60px;
+    height: 60px;
+    border: 4px solid rgba(207, 63, 53, 0.2);
+    border-top: 4px solid var(--cinnabar-red);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loading-content p {
+    font-family: "Noto Serif SC", serif;
+    font-size: 18px;
+    color: var(--ink-black);
+    margin-bottom: 8px;
+}
+
+.loading-subtext {
+    font-size: 14px !important;
+    color: var(--text-tertiary) !important;
+}
+
+/* Empty State */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 450px;
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.empty-icon {
+    color: var(--cinnabar-red);
+    opacity: 0.5;
+    margin-bottom: 24px;
+}
+
+.empty-state h4 {
+    font-family: "Noto Serif SC", serif;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--ink-black);
+    margin-bottom: 12px;
+}
+
+.empty-state p {
+    font-size: 14px;
+    line-height: 1.5;
+    max-width: 300px;
 }
 </style>

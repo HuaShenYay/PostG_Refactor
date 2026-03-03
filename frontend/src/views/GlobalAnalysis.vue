@@ -56,8 +56,7 @@
                 <div class="stat-hero-item" v-for="(item, idx) in [
                     { label: '诗歌馆藏', value: globalStats.totalPoems, icon: NBookOutline },
                     { label: '活跃墨客', value: globalStats.totalUsers, icon: NPeopleOutline },
-                    { label: '累计雅评', value: globalStats.totalReviews, icon: NChatOutline },
-                    { label: '互动频次', value: globalStats.avgEngagement, icon: NTrendingUpOutline }
+                    { label: '累计雅评', value: globalStats.totalReviews, icon: NChatOutline }
                 ]" :key="item.label">
                     <div class="stat-icon-gate">
                         <n-icon><component :is="item.icon" /></n-icon>
@@ -69,16 +68,44 @@
                             <small v-if="item.label === '诗歌馆藏'">篇</small>
                             <small v-else-if="item.label === '活跃墨客'">人</small>
                             <small v-else-if="item.label === '累计雅评'">条</small>
-                            <small v-else-if="item.label === '互动频次'"></small>
                         </span>
                     </div>
                 </div>
                 <div class="watermark-icon"><NGlobeOutline /></div>
             </div>
 
+            <!-- 主题宏图 -->
+            <div class="glass-card viz-card-large anim-fade-up" style="animation-delay: 0.1s">
+                <div class="section-zen-header">
+                    <div class="header-accent"></div>
+                    <h3>主题宏图</h3>
+                    <div class="wordcloud-controls">
+                        <span class="control-label">显示数量:</span>
+                        <n-slider 
+                            v-model:value="wordcloudLimit" 
+                            :min="5" 
+                            :max="100" 
+                            :step="5"
+                            size="small"
+                            style="width: 150px;"
+                            @update:value="updateWordcloud"
+                        />
+                        <span class="control-value">{{ wordcloudLimit }}</span>
+                    </div>
+                </div>
+                <div v-if="themeDistribution.length > 0" ref="themeChartRef" style="height: 400px;"></div>
+                <div v-else class="empty-state-small">
+                    <div class="empty-icon-small">
+                        <NIcon size="32"><NSparkles /></NIcon>
+                    </div>
+                    <h4>等待更多评论</h4>
+                    <p>当社区留下更多评论后，我们将为您分析主题分布</p>
+                </div>
+            </div>
+
             <div class="analysis-grid">
                 <!-- 热门排行 -->
-                <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.1s">
+                <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.15s">
                     <div class="section-zen-header">
                         <div class="header-accent"></div>
                         <h3>热门诗篇</h3>
@@ -88,7 +115,7 @@
                         <div v-for="(poem, index) in popularPoems" :key="poem.id" class="popular-item" :class="{ 'top-item': index < 3 }">
                             <div class="rank">{{ index + 1 }}</div>
                             <div class="p-info">
-                                <span class="p-title">{{ poem.title }}</span>
+                                <span class="p-title">{{ getPoemTitle(poem) }}</span>
                                 <span class="p-author">{{ poem.author }} · {{ poem.dynasty }}</span>
                             </div>
                             <div class="p-stats">
@@ -100,13 +127,6 @@
 
                 <!-- 分布图表组 -->
                 <div class="charts-column">
-                    <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.15s">
-                        <div class="section-zen-header">
-                            <div class="header-accent"></div>
-                            <h3>主题宏图</h3>
-                        </div>
-                        <div ref="themeChartRef" style="height: 240px;"></div>
-                    </div>
                     <div class="glass-card viz-card-elegant anim-fade-up" style="animation-delay: 0.2s">
                         <div class="section-zen-header">
                             <div class="header-accent"></div>
@@ -126,6 +146,7 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import * as echarts from 'echarts'
+import 'echarts-wordcloud'
 import { 
   NIcon, 
   NButton,
@@ -140,7 +161,7 @@ import {
   BookOutline as NBookOutline,
   PeopleOutline as NPeopleOutline,
   ChatbubbleEllipsesOutline as NChatOutline,
-  TrendingUpOutline as NTrendingUpOutline,
+
   HeartOutline as NHeartOutline,
   RefreshOutline as NRefreshOutline,
   Search as NSearch,
@@ -166,10 +187,8 @@ const globalStats = ref({
   totalUsers: 0,
   totalPoems: 0,
   totalReviews: 0,
-  totalLikes: 0,
   totalViews: 0,
   totalShares: 0,
-  avgEngagement: '0%',
   todayNewUsers: 0,
   todayReviews: 0
 })
@@ -185,6 +204,9 @@ const dynastyDistribution = ref([])
 
 // 词云数据
 const wordCloudData = ref([])
+
+// 词云显示数量
+const wordcloudLimit = ref(20)
 
 // 选择器选项
 const timeRangeOptions = [
@@ -223,21 +245,27 @@ const fetchPopularPoems = async () => {
 const fetchThemeDistribution = async () => {
   try {
     const res = await axios.get('/api/global/theme-distribution')
-    themeDistribution.value = res.data && res.data.length > 0 ? res.data : [
-      { name: '山水田园', value: 30 },
-      { name: '思乡情怀', value: 25 },
-      { name: '豪迈边塞', value: 20 },
-      { name: '离别赠答', value: 15 },
-      { name: '咏史怀古', value: 10 }
-    ]
+    // 只有在评论主题数据为空时才使用默认数据
+    if (themeDistribution.value.length === 0) {
+      themeDistribution.value = res.data && res.data.length > 0 ? res.data : [
+        { name: '山水田园', value: 30 },
+        { name: '思乡情怀', value: 25 },
+        { name: '豪迈边塞', value: 20 },
+        { name: '离别赠答', value: 15 },
+        { name: '咏史怀古', value: 10 }
+      ]
+    }
   } catch (error) {
-    themeDistribution.value = [
-      { name: '山水田园', value: 30 },
-      { name: '思乡情怀', value: 25 },
-      { name: '豪迈边塞', value: 20 },
-      { name: '离别赠答', value: 15 },
-      { name: '咏史怀古', value: 10 }
-    ]
+    // 只有在评论主题数据为空时才使用默认数据
+    if (themeDistribution.value.length === 0) {
+      themeDistribution.value = [
+        { name: '山水田园', value: 30 },
+        { name: '思乡情怀', value: 25 },
+        { name: '豪迈边塞', value: 20 },
+        { name: '离别赠答', value: 15 },
+        { name: '咏史怀古', value: 10 }
+      ]
+    }
   }
 }
 
@@ -273,6 +301,31 @@ const fetchWordCloudData = async () => {
   }
 }
 
+// 获取评论主题分布
+const fetchCommentTopics = async () => {
+  try {
+    const res = await axios.get('/api/global/comment-topics')
+    const commentTopics = res.data
+    if (commentTopics && commentTopics.length > 0) {
+      // 转换为图表所需格式
+      themeDistribution.value = commentTopics.map(topic => ({
+        name: topic.topic_name,
+        value: topic.count
+      }))
+    } else {
+      // 评论主题数据为空，显示提示
+      themeDistribution.value = []
+    }
+  } catch (error) {
+    void error
+  }
+}
+
+// 更新词云显示
+const updateWordcloud = () => {
+  initCharts()
+}
+
 // 初始化图表
 const initCharts = () => {
   charts.forEach(c => c.dispose())
@@ -283,49 +336,46 @@ const initCharts = () => {
 
   if (isElementMounted(themeChartRef) && themeDistribution.value.length > 0) {
     const c1 = echarts.init(themeChartRef.value)
+    // 按词频排序并限制数量
+    const limitedData = [...themeDistribution.value]
+      .sort((a, b) => b.value - a.value)
+      .slice(0, wordcloudLimit.value)
     c1.setOption({
       tooltip: { 
         trigger: 'item', 
         backgroundColor: 'rgba(255,255,255,0.9)', 
         textStyle: { color: '#1a1a1a' },
-        formatter: '{b}: {c} ({d}%)'
+        formatter: '{b}: {c}'
       },
       series: [{
-        type: 'pie',
-        radius: ['60%', '85%'],
-        itemStyle: { 
-          borderRadius: 16, 
-          borderColor: '#fdfbf7', 
-          borderWidth: 4,
-          shadowColor: 'rgba(0,0,0,0.1)',
-          shadowBlur: 10
-        },
-        data: themeDistribution.value.map(item => ({
-          value: item.value,
-          name: item.name,
-          itemStyle: { 
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: '#cf3f35' },
-              { offset: 1, color: '#8a1616' }
-            ])
+        type: 'wordCloud',
+        shape: 'circle',
+        left: 'center',
+        top: 'center',
+        width: '90%',
+        height: '90%',
+        right: null,
+        bottom: null,
+        sizeRange: [14, 60],
+        rotationRange: [-45, 90],
+        rotationStep: 45,
+        gridSize: 8,
+        drawOutOfBound: false,
+        textStyle: {
+          fontFamily: 'Noto Serif SC',
+          fontWeight: 'bold',
+          color: function () {
+            return 'rgb(' + [
+              Math.round(Math.random() * 160 + 50),
+              Math.round(Math.random() * 50),
+              Math.round(Math.random() * 50)
+            ].join(',') + ')';
           }
-        })),
-        label: {
-          show: true,
-          formatter: '{b}: {d}%',
-          position: 'outside',
-          color: '#333',
-          fontSize: 12,
-          fontWeight: 'bold'
         },
-        labelLine: {
-          show: true,
-          length: 20,
-          length2: 30,
-          lineStyle: {
-            color: '#999'
-          }
-        }
+        emphasis: {
+          textStyle: { shadowBlur: 10, shadowColor: '#333' }
+        },
+        data: limitedData
       }]
     })
     charts.push(c1)
@@ -368,7 +418,8 @@ onMounted(async () => {
       fetchPopularPoems(),
       fetchThemeDistribution(),
       fetchDynastyDistribution(),
-      fetchWordCloudData()
+      fetchWordCloudData(),
+      fetchCommentTopics()
     ])
     
     // 数据获取完成后初始化图表
@@ -391,6 +442,20 @@ const goToPersonalAnalysis = () => router.push('/personal-analysis')
 const logout = () => {
   localStorage.removeItem('user')
   router.push('/login')
+}
+
+// 获取诗歌的正确标题（根据类型）
+const getPoemTitle = (poem) => {
+  // 宋词：词牌名 + 标题
+  if (poem.rhythmic && poem.title) {
+    return `${poem.rhythmic} · ${poem.title}`
+  }
+  // 诗经：章节 + 标题
+  if (poem.chapter && poem.section) {
+    return `${poem.chapter} · ${poem.section} · ${poem.title}`
+  }
+  // 唐诗：直接返回标题
+  return poem.title || '无题'
 }
 </script>
 
@@ -600,6 +665,27 @@ const logout = () => {
     margin: 0;
 }
 
+/* Wordcloud Controls */
+.wordcloud-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.control-label {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+
+.control-value {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    min-width: 30px;
+    text-align: right;
+}
+
 .section-card {
     padding: 40px !important;
 }
@@ -755,5 +841,36 @@ const logout = () => {
         justify-content: center;
         padding: 12px;
     }
+}
+
+/* Empty State */
+.empty-state-small {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 240px;
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.empty-icon-small {
+    color: var(--cinnabar-red);
+    opacity: 0.5;
+    margin-bottom: 16px;
+}
+
+.empty-state-small h4 {
+    font-family: "Noto Serif SC", serif;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ink-black);
+    margin-bottom: 8px;
+}
+
+.empty-state-small p {
+    font-size: 12px;
+    line-height: 1.4;
+    max-width: 250px;
 }
 </style>

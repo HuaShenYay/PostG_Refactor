@@ -62,7 +62,6 @@
                                     <span class="r-user">{{ r.user_id }}</span>
                                     <div class="review-meta">
                                         <n-rate readonly :value="r.rating" size="small" />
-                                        <n-icon v-if="r.liked" class="liked-icon"><NHeart /></n-icon>
                                     </div>
                                 </div>
                                 <p class="r-content">{{ r.comment }}</p>
@@ -73,14 +72,6 @@
                         <div class="quick-comment" v-if="currentUser !== '访客'">
                             <n-input v-model:value="newComment" placeholder="留下雅言..." size="small" round />
                             <n-rate v-model:value="newRating" size="small" />
-                            <n-button circle size="small" quaternary class="like-btn" @click="newLiked = !newLiked">
-                                <template #icon>
-                                    <n-icon>
-                                        <NHeart v-if="newLiked" />
-                                        <NHeartOutline v-else />
-                                    </n-icon>
-                                </template>
-                            </n-button>
                             <n-button circle size="small" @click="submitComment" :disabled="!newComment" class="submit-btn">
                                 <template #icon><n-icon><NSend /></n-icon></template>
                             </n-button>
@@ -99,7 +90,7 @@
                     <div class="section-content poem-content">
                         <!-- 诗歌标题和作者 -->
                         <div class="poem-header-horizontal">
-                                <h1 class="poem-title">{{ dailyPoem.title }}</h1>
+                                <h1 class="poem-title">{{ getPoemTitle(dailyPoem) }}</h1>
                             <div class="author-section">
                                 <div class="author-info">
                                     <span class="author-name">{{ dailyPoem.author }}</span>
@@ -216,8 +207,6 @@ import {
   Send as NSend,
   PersonOutline as NPersonOutline,
   GlobeOutline as NGlobeOutline,
-  Heart as NHeart,
-  HeartOutline as NHeartOutline
 } from '@vicons/ionicons5'
 
 const router = useRouter()
@@ -232,7 +221,6 @@ const dailyPoem = ref(null)
 const reviews = ref([])
 const newComment = ref('')
 const newRating = ref(3)
-const newLiked = ref(false)
 const userProfile = ref(null)
 const scrollContainer = ref(null)
 const skipCount = ref(0)
@@ -373,8 +361,8 @@ const initCharts = () => {
                   },
                   areaStyle: {
                       color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                          { offset: 0, color: hexToRgba(primaryLight || primary, 0.45, primary) },
-                          { offset: 1, color: hexToRgba(primary, 0.12, primary) }
+                          { offset: 0, color: hexToRgba(primaryLight || primary, 0.45) },
+                          { offset: 1, color: hexToRgba(primary, 0.12) }
                       ])
                   }
               }]
@@ -633,28 +621,15 @@ const submitComment = async () => {
       username: currentUser,
       poem_id: dailyPoem.value.id,
       rating: newRating.value,
-      liked: newLiked.value,
       comment: newComment.value
     })
     if(res.data.status === 'success') {
       fetchReviews(dailyPoem.value.id)
       newComment.value = ''
       newRating.value = 3
-      newLiked.value = false
       
-      // 如果返回了推荐诗歌，显示并切换过去
-      if (res.data.recommended) {
-        message.success('评论成功！为你推荐一首诗')
-        // 添加到已看列表并切换推荐诗歌
-        if (!seenPoems.value.includes(dailyPoem.value.id)) {
-          seenPoems.value.push(dailyPoem.value.id)
-        }
-        dailyPoem.value = res.data.recommended
-        fetchReviews(dailyPoem.value.id)
-        fetchPoemAnalysis(dailyPoem.value.id)
-      } else {
-        message.success('评论成功！')
-      }
+      // 无论是否有推荐诗歌，都保持在当前诗歌
+      message.success('评论成功！')
     }
   } catch(e) {
     message.error(e.response?.data?.message || '发表评论失败')
@@ -666,6 +641,21 @@ const submitComment = async () => {
 const logout = () => {
   localStorage.removeItem('user')
   router.push('/login')
+}
+
+// 获取诗歌的正确标题（根据类型）
+const getPoemTitle = (poem) => {
+  if (!poem) return ''
+  // 宋词：词牌名 + 标题
+  if (poem.rhythmic && poem.title) {
+    return `${poem.rhythmic} · ${poem.title}`
+  }
+  // 诗经：章节 + 标题
+  if (poem.chapter && poem.section) {
+    return `${poem.chapter} · ${poem.section} · ${poem.title}`
+  }
+  // 唐诗：直接返回标题
+  return poem.title || '无题'
 }
 
 const fetchPoemById = async (id) => {
@@ -1143,9 +1133,6 @@ watch(() => route.query.poemId, (newId) => {
   gap: 8px;
 }
 
-.liked-icon {
-  color: var(--cinnabar-red);
-}
 
 .r-user {
   font-size: 12px;
@@ -1187,13 +1174,6 @@ watch(() => route.query.poemId, (newId) => {
   background: rgba(255, 255, 255, 0.95);
 }
 
-.like-btn {
-  color: var(--cinnabar-red) !important;
-}
-
-.like-btn:hover {
-  background: rgba(207, 63, 53, 0.08) !important;
-}
 
 /* 覆盖评论输入框默认样式，移除绿色光线效果 */
 .quick-comment :deep(.n-input) {
