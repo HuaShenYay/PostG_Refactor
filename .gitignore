@@ -47,6 +47,8 @@ logs/
 .pytest_cache/
 .mypy_cache/
 .hypothesis/
+.agents/
+.
 
 # ====================
 # Node
@@ -85,6 +87,8 @@ data/chinese-poetry/
 data/dict.csv
 data/dict.xlsx
 data/dataset.csv
+backend/data/poetry
+backend/data
 
 # MovieLens数据集 (可重新下载)
 backend/experiments/data/
