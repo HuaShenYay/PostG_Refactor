@@ -29,11 +29,16 @@ class RecommendationService:
 
     def _ensure_recommender(self):
         if self.recommender is None:
-            from core.bertopic_enhanced_cf import BERTopicEnhancedCF
+            from core.bertopic_enhanced_cf import SentenceTransformerEnhancedCF
 
-            self.recommender = BERTopicEnhancedCF(
-                cf_weight=0.35,
-                semantic_weight=0.65,
+            self.recommender = SentenceTransformerEnhancedCF(
+                cf_weight=0.5,
+                semantic_weight=0.5,
+                # 动态权重策略（实验最优配置）
+                cold_start_weights=(0.80, 0.15, 0.05),
+                low_activity_weights=(0.55, 0.30, 0.15),
+                medium_activity_weights=(0.40, 0.35, 0.25),
+                high_activity_weights=(0.30, 0.40, 0.30),
                 n_neighbors=30,
                 fast_min_ratings=10,
                 fast_min_interactions=3000,
@@ -468,9 +473,8 @@ def add_review():
         exclude_ids = {r.poem_id for r in user_reviews}
 
         # 使用 Hybrid 推荐
-        all_interactions = rec_service._build_interactions()
         recs = rec_service.recommender.recommend(
-            user_interactions, all_interactions, top_k=5
+            user_interactions, exclude_ids, top_k=5
         )
 
         # 找到第一个未被评论的推荐
@@ -692,11 +696,10 @@ def recommend_one(username):
     # ========== 策略3: 基于BERTopic的智能推荐（有评论用户）==========
     try:
         rec_service.refresh_if_needed()
-        all_interactions = rec_service._build_interactions()
 
         # 获取候选推荐（扩大候选池到100首）
         recs = rec_service.recommender.recommend(
-            user_interactions, all_interactions, top_k=100
+            user_interactions, exclude_ids, top_k=100
         )
 
         # 过滤已看过的

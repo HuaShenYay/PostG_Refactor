@@ -393,7 +393,14 @@ const initCharts = () => {
 
     hbChart.setOption({
       grid: { top: 10, bottom: 20, left: 10, right: 10 },
-      xAxis: { type: 'category', data: poemAnalysis.value.chart_data.char_labels, show: false },
+      xAxis: { 
+        type: 'category', 
+        data: poemAnalysis.value.chart_data.char_labels, 
+        show: true,
+        axisLine: { show: true, lineStyle: { color: '#888' } },
+        axisTick: { show: false },
+        axisLabel: { show: false }
+      },
       yAxis: { show: false, min: -0.5, max: 1.5 }, // Adjusted range for 0/1 data
       series: [{
         data: seq,
