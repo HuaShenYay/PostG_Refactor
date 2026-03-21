@@ -43,7 +43,7 @@ bun run dev
 
 | 文件 | 描述 |
 |------|------|
-| `core/sentencetransformer_enhanced_cf.py` | **核心算法**: SentenceTransformer增强的协同过滤
+| `core/hybrid_cf.py` | **核心算法**: 混合协同过滤 |
 
 
 ---
@@ -78,9 +78,7 @@ python -m experiments.movielens_experiment
 
 1. **数据库配置**: 确保 MySQL/PostgreSQL 已启动，配置文件在 `backend/config.py`
 
-2. **SentenceTransformer模型**: 首次运行会自动加载/训练SentenceTransformer模型，可能需要较长时间
-
-3. **依赖安装**: 如果依赖缺失，确保在 conda 环境中执行:
+2. **依赖安装**: 如果依赖缺失，确保在 conda 环境中执行:
    ```bash
    pip install -r backend/requirements.txt
    ```
@@ -97,7 +95,7 @@ python -m experiments.movielens_experiment
 PostG_Refactor/
 ├── backend/               # Flask 后端
 │   ├── core/              # 推荐算法核心
-│   │   ├── sentencetransformer_enhanced_cf.py  # 核心算法（本项目创新点）
+│   │   ├── hybrid_cf.py    # 核心算法
 │   ├── experiments/       # 实验代码
 │   ├── app.py             # 主服务入口
 │   └── run_server.py      # 启动脚本

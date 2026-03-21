@@ -3,8 +3,9 @@ from flask_cors import CORS
 from config import Config
 from models import db, User, Poem, Review
 from datetime import datetime, timedelta
-import pandas as pd
 from sqlalchemy import text, func, or_
+from functools import wraps
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 import json
 import os
 import threading
@@ -25,9 +26,77 @@ app.config.from_object(Config)
 CORS(app)
 db.init_app(app)
 
+admin_token_serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
+
+
+def _generate_admin_token():
+    return admin_token_serializer.dumps({"role": "admin"})
+
+
+def _verify_admin_token(token):
+    try:
+        payload = admin_token_serializer.loads(
+            token,
+            max_age=app.config["ADMIN_TOKEN_MAX_AGE"],
+        )
+    except SignatureExpired:
+        return None, "登录已过期，请重新登录"
+    except BadSignature:
+        return None, "无效的管理员凭证"
+
+    if payload.get("role") != "admin":
+        return None, "无效的管理员凭证"
+    return payload, None
+
+
+def admin_required(view_func):
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        if not token:
+            token = request.headers.get("X-Admin-Token", "").strip()
+
+        if not token:
+            return jsonify({"status": "error", "message": "缺少管理员凭证"}), 401
+
+        payload, error = _verify_admin_token(token)
+        if error:
+            return jsonify({"status": "error", "message": error}), 401
+
+        request.admin_payload = payload
+        return view_func(*args, **kwargs)
+
+    return wrapped
+
+
+def _normalize_optional_text(value):
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    return text_value or None
+
+
+def _poem_summary(poem):
+    review_count = Review.query.filter_by(poem_id=poem.id).count()
+    return {
+        **poem.to_dict(),
+        "review_count": review_count,
+    }
+
+
+def _user_summary(user):
+    review_count = Review.query.filter_by(user_id=user.id).count()
+    return {
+        **user.to_dict(),
+        "review_count": review_count,
+    }
+
 
 class RecommendationService:
-    """BERTopic Enhanced CF recommender service - 融合评分矩阵与主题向量"""
+    """Standard hybrid collaborative filtering recommender service."""
 
     def __init__(self):
         self.recommender = None
@@ -38,19 +107,12 @@ class RecommendationService:
 
     def _ensure_recommender(self):
         if self.recommender is None:
-            from core.sentencetransformer_enhanced_cf import SentenceTransformerEnhancedCF
+            from core.hybrid_cf import HybridCFRecommender
 
-            self.recommender = SentenceTransformerEnhancedCF(
-                cf_weight=0.5,
-                semantic_weight=0.5,
-                # 动态权重策略（实验最优配置）
-                cold_start_weights=(0.80, 0.15, 0.05),
-                low_activity_weights=(0.55, 0.30, 0.15),
-                medium_activity_weights=(0.40, 0.35, 0.25),
-                high_activity_weights=(0.30, 0.40, 0.30),
+            self.recommender = HybridCFRecommender(
+                user_cf_weight=0.5,
+                item_cf_weight=0.5,
                 n_neighbors=30,
-                fast_min_ratings=10,
-                fast_min_interactions=3000,
             )
 
     @staticmethod
@@ -117,6 +179,7 @@ class RecommendationService:
         
         # 获取用户的所有评论历史
         user_reviews = Review.query.filter_by(user_id=user.id).all()
+        review_count = len(user_reviews)
         user_interactions = [
             {
                 "user_id": r.user_id,
@@ -175,9 +238,7 @@ class RecommendationService:
                 unseen_poem = random.choice(unseen_candidates)
                 return unseen_poem, "探索推荐：尚未被发现的诗"
         
-        # 直接进入智能推荐流程，依赖核心算法的动态权重策略处理冷启动
-        
-        # ========== 策略3: 基于SentenceTransformer的智能推荐（有评论用户）==========
+        # ========== 策略3: 基于 User-CF + Item-CF 的混合协同过滤 ==========
         try:
             self.refresh_if_needed()
             
@@ -201,7 +262,7 @@ class RecommendationService:
                     .all()
                 )
                 for p in random_poems:
-                    candidates.append({"poem_id": p.id, "score": 0.5})
+                    candidates.append({"poem_id": p.id, "score": 0.5, "strategy": "random_fill"})
             
             # 随机选择（增加时间和用户ID的随机性）
             if candidates:
@@ -217,7 +278,10 @@ class RecommendationService:
                 
                 poem = Poem.query.get(selected["poem_id"])
                 if poem:
-                    return poem, "为你推荐"
+                    return poem, self._build_recommend_reason(
+                        review_count=review_count,
+                        strategy=selected.get("strategy", "cf"),
+                    )
         except Exception as e:
             print(f"Recommend error: {e}")
         
@@ -230,6 +294,21 @@ class RecommendationService:
             return fallback, "随机推荐"
         
         return None, ""
+
+    @staticmethod
+    def _build_recommend_reason(review_count, strategy="cf"):
+        if strategy == "random_fill":
+            if review_count == 0:
+                return "新用户入门推荐"
+            return "为你补充发现"
+
+        if review_count == 0:
+            return "新用户入门推荐"
+        if review_count < 3:
+            return "根据你刚开始的评分记录推荐"
+        if review_count < 10:
+            return "根据你的近期评分偏好推荐"
+        return "基于相似用户与相似诗作推荐"
 
     @staticmethod
     def _extract_preference_topic_tokens(user):
@@ -255,7 +334,7 @@ rec_service = RecommendationService()
 
 @app.route("/")
 def hello_world():
-    return "Poetry Recommendation Engine (BERTopic Only) is Running!"
+    return "Poetry Recommendation Engine (Hybrid CF) is Running!"
 
 
 @app.route("/api/login", methods=["POST"])
@@ -302,6 +381,309 @@ def register():
     except Exception as e:
         db.session.rollback()
         return jsonify({"message": f"注册失败: {str(e)}", "status": "error"}), 500
+
+
+@app.route("/api/admin/login", methods=["POST"])
+def admin_login():
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"status": "error", "message": "请输入管理员账号和密码"}), 400
+
+    if (
+        username != app.config["ADMIN_USERNAME"]
+        or password != app.config["ADMIN_PASSWORD"]
+    ):
+        return jsonify({"status": "error", "message": "管理员账号或密码错误"}), 401
+
+    return jsonify(
+        {
+            "status": "success",
+            "message": "管理员登录成功",
+            "token": _generate_admin_token(),
+            "admin": {"username": app.config["ADMIN_USERNAME"]},
+        }
+    )
+
+
+@app.route("/api/admin/overview")
+@admin_required
+def get_admin_overview():
+    return jsonify(
+        {
+            "status": "success",
+            "overview": {
+                "users": User.query.count(),
+                "poems": Poem.query.count(),
+                "reviews": Review.query.count(),
+                "today_reviews": Review.query.filter(
+                    Review.created_at >= datetime.utcnow().replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+                ).count(),
+            },
+        }
+    )
+
+
+@app.route("/api/admin/poems")
+@admin_required
+def admin_get_poems():
+    query = (request.args.get("q") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 10)), 1), 50)
+
+    poems_query = Poem.query
+    if query:
+        like_query = f"%{query}%"
+        poems_query = poems_query.filter(
+            Poem.title.ilike(like_query)
+            | Poem.author.ilike(like_query)
+            | Poem.content.ilike(like_query)
+            | Poem.dynasty.ilike(like_query)
+            | Poem.category.ilike(like_query)
+            | Poem.topic_tags.ilike(like_query)
+        )
+
+    total = poems_query.count()
+    poems = (
+        poems_query.order_by(Poem.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return jsonify(
+        {
+            "status": "success",
+            "items": [_poem_summary(poem) for poem in poems],
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+            },
+        }
+    )
+
+
+@app.route("/api/admin/poems", methods=["POST"])
+@admin_required
+def admin_create_poem():
+    data = request.json or {}
+    title = (data.get("title") or "").strip()
+    content = (data.get("content") or "").strip()
+
+    if not title or not content:
+        return jsonify({"status": "error", "message": "标题和内容不能为空"}), 400
+
+    poem = Poem(
+        title=title,
+        content=content,
+        author=_normalize_optional_text(data.get("author")),
+        dynasty=_normalize_optional_text(data.get("dynasty")),
+        chapter=_normalize_optional_text(data.get("chapter")),
+        section=_normalize_optional_text(data.get("section")),
+        rhythmic=_normalize_optional_text(data.get("rhythmic")),
+        category=_normalize_optional_text(data.get("category")),
+        topic_tags=_normalize_optional_text(data.get("topic_tags")),
+        views=int(data.get("views", 0) or 0),
+    )
+    db.session.add(poem)
+    db.session.commit()
+    rec_service.refresh_if_needed(force=True)
+
+    return jsonify(
+        {
+            "status": "success",
+            "message": "诗歌已创建",
+            "item": _poem_summary(poem),
+        }
+    )
+
+
+@app.route("/api/admin/poems/<int:poem_id>", methods=["PUT"])
+@admin_required
+def admin_update_poem(poem_id):
+    poem = Poem.query.get(poem_id)
+    if not poem:
+        return jsonify({"status": "error", "message": "诗歌不存在"}), 404
+
+    data = request.json or {}
+    title = (data.get("title") or "").strip()
+    content = (data.get("content") or "").strip()
+
+    if not title or not content:
+        return jsonify({"status": "error", "message": "标题和内容不能为空"}), 400
+
+    poem.title = title
+    poem.content = content
+    poem.author = _normalize_optional_text(data.get("author"))
+    poem.dynasty = _normalize_optional_text(data.get("dynasty"))
+    poem.chapter = _normalize_optional_text(data.get("chapter"))
+    poem.section = _normalize_optional_text(data.get("section"))
+    poem.rhythmic = _normalize_optional_text(data.get("rhythmic"))
+    poem.category = _normalize_optional_text(data.get("category"))
+    poem.topic_tags = _normalize_optional_text(data.get("topic_tags"))
+    poem.views = int(data.get("views", 0) or 0)
+
+    db.session.commit()
+    rec_service.refresh_if_needed(force=True)
+
+    return jsonify(
+        {
+            "status": "success",
+            "message": "诗歌已更新",
+            "item": _poem_summary(poem),
+        }
+    )
+
+
+@app.route("/api/admin/poems/<int:poem_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_poem(poem_id):
+    poem = Poem.query.get(poem_id)
+    if not poem:
+        return jsonify({"status": "error", "message": "诗歌不存在"}), 404
+
+    db.session.delete(poem)
+    db.session.commit()
+    rec_service.refresh_if_needed(force=True)
+    return jsonify({"status": "success", "message": "诗歌已删除"})
+
+
+@app.route("/api/admin/reviews")
+@admin_required
+def admin_get_reviews():
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 10)), 1), 50)
+
+    query = (
+        Review.query.order_by(Review.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    total = Review.query.count()
+
+    items = []
+    for review in query:
+        items.append(
+            {
+                "id": review.id,
+                "rating": review.rating,
+                "comment": review.comment,
+                "created_at": review.created_at.isoformat() if review.created_at else None,
+                "user": review.user.username if review.user else "未知用户",
+                "poem_title": review.poem.title if review.poem else "未知诗歌",
+                "poem_id": review.poem_id,
+            }
+        )
+
+    return jsonify(
+        {
+            "status": "success",
+            "items": items,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+            },
+        }
+    )
+
+
+@app.route("/api/admin/reviews/<int:review_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_review(review_id):
+    review = Review.query.get(review_id)
+    if not review:
+        return jsonify({"status": "error", "message": "评论不存在"}), 404
+
+    db.session.delete(review)
+    db.session.commit()
+    rec_service.refresh_if_needed(force=True)
+    return jsonify({"status": "success", "message": "评论已删除"})
+
+
+@app.route("/api/admin/users")
+@admin_required
+def admin_get_users():
+    query = (request.args.get("q") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 10)), 1), 50)
+
+    users_query = User.query
+    if query:
+        like_query = f"%{query}%"
+        users_query = users_query.filter(User.username.ilike(like_query))
+
+    total = users_query.count()
+    users = (
+        users_query.order_by(User.created_at.desc(), User.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return jsonify(
+        {
+            "status": "success",
+            "items": [_user_summary(user) for user in users],
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+            },
+        }
+    )
+
+
+@app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
+@admin_required
+def admin_update_user(user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"status": "error", "message": "用户不存在"}), 404
+
+    data = request.json or {}
+    new_username = (data.get("username") or "").strip()
+    reset_password = data.get("reset_password") or ""
+
+    if not new_username:
+        return jsonify({"status": "error", "message": "用户名不能为空"}), 400
+
+    existing_user = User.query.filter(User.username == new_username, User.id != user_id).first()
+    if existing_user:
+        return jsonify({"status": "error", "message": "用户名已存在"}), 400
+
+    user.username = new_username
+    if reset_password:
+        user.set_password(reset_password)
+
+    db.session.commit()
+
+    return jsonify(
+        {
+            "status": "success",
+            "message": "用户信息已更新",
+            "item": _user_summary(user),
+        }
+    )
+
+
+@app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_user(user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"status": "error", "message": "用户不存在"}), 404
+
+    db.session.delete(user)
+    db.session.commit()
+    rec_service.refresh_if_needed(force=True)
+    return jsonify({"status": "success", "message": "用户已删除"})
 
 
 @app.route("/api/user/update", methods=["POST"])
@@ -639,7 +1021,7 @@ def add_review():
     db.session.commit()
     rec_service.refresh_if_needed(force=True)
 
-    # 评论成功后，返回基于 SentenceTransformer 增强协同过滤的推荐
+    # 评论成功后，返回基于 User-CF + Item-CF 的混合协同过滤推荐
     try:
         # 定义seen_ids变量
         seen_ids = [poem_id]
@@ -1267,16 +1649,20 @@ def get_visual_stats():
 
 @app.route("/api/visual/semantic-similarity")
 def get_semantic_similarity():
-    """基于SentenceTransformer的语义相似度可视化数据"""
+    """基于Item-CF的诗歌相似度可视化数据"""
     try:
-        from core.sentencetransformer_enhanced_cf import SentenceTransformerEnhancedCF
-        
-        # 初始化推荐器
-        recommender = SentenceTransformerEnhancedCF()
-        
-        # 构建诗歌和交互数据
+        from core.hybrid_cf import HybridCFRecommender
+
+        recommender = HybridCFRecommender()
+
         poems = [
-            {"id": p.id, "content": p.content or "", "title": p.title or ""}
+            {
+                "id": p.id,
+                "content": p.content or "",
+                "title": p.title or "",
+                "author": p.author or "未知",
+                "dynasty": p.dynasty or "未知",
+            }
             for p in Poem.query.limit(50).all()  # 限制50首诗以保证性能
         ]
         interactions = [
@@ -1288,29 +1674,24 @@ def get_semantic_similarity():
             for r in Review.query.limit(1000).all()  # 限制1000条交互
         ]
         
-        # 训练推荐器
         recommender.fit(poems, interactions)
-        
-        # 获取语义相似度矩阵
-        if recommender.item_semantic_sim is not None:
-            # 构建节点和链接
+
+        if recommender.item_similarity is not None:
             nodes = []
             links = []
-            
-            # 添加节点
+
             for i, poem in enumerate(poems):
                 nodes.append({
                     "id": poem["id"],
                     "name": poem["title"],
-                    "author": poem.get("author", "未知"),
-                    "dynasty": poem.get("dynasty", "未知")
+                    "author": poem["author"],
+                    "dynasty": poem["dynasty"],
                 })
-            
-            # 添加链接（只添加相似度高的链接）
+
             for i in range(len(poems)):
                 for j in range(i + 1, len(poems)):
-                    similarity = float(recommender.item_semantic_sim[i][j])
-                    if similarity > 0.7:  # 只显示相似度大于0.7的链接
+                    similarity = float(recommender.item_similarity[i][j])
+                    if similarity > 0.35:
                         links.append({
                             "source": poems[i]["id"],
                             "target": poems[j]["id"],
@@ -1319,7 +1700,7 @@ def get_semantic_similarity():
             
             return jsonify({"nodes": nodes, "links": links})
         else:
-            return jsonify({"error": "语义向量未生成"}), 500
+            return jsonify({"error": "协同过滤相似度未生成"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1530,11 +1911,11 @@ def get_recommend_one(username):
     try:
         user = User.query.filter_by(username=username).first()
         if not user:
-            # 新用户或游客，返回随机热门诗歌
+            # 游客返回入门推荐
             poem = Poem.query.order_by(func.rand()).first()
             if poem:
                 res = poem.to_dict()
-                res["recommend_reason"] = "热门推荐"
+                res["recommend_reason"] = "新用户入门推荐"
                 return jsonify(res)
             return jsonify({"error": "No poems available"}), 404
         
@@ -1579,21 +1960,65 @@ def get_user_recommendations(username):
         if not user:
             return jsonify({"poems": []})
 
-        # 获取推荐诗歌
-        poems = Poem.query.limit(10).all()
+        user_reviews = Review.query.filter_by(user_id=user.id).all()
+        review_count = len(user_reviews)
+        exclude_ids = {review.poem_id for review in user_reviews}
+        user_interactions = [
+            {
+                "user_id": review.user_id,
+                "poem_id": review.poem_id,
+                "rating": review.rating,
+                "created_at": review.created_at or datetime.utcnow(),
+            }
+            for review in user_reviews
+        ]
+
+        rec_service.refresh_if_needed()
+        recommendations = rec_service.recommender.recommend(
+            user_interactions,
+            exclude_ids=exclude_ids,
+            top_k=10,
+        )
+
         result = []
-        for p in poems:
+        for rec in recommendations:
+            poem = Poem.query.get(rec["poem_id"])
+            if not poem:
+                continue
+            if review_count == 0:
+                reason = "新用户入门推荐"
+            elif review_count < 3:
+                reason = "根据你刚开始的评分记录推荐"
+            elif review_count < 10:
+                reason = "根据你的近期评分偏好推荐"
+            else:
+                reason = "基于相似用户与相似诗作推荐"
             result.append(
                 {
-                    "id": p.id,
-                    "title": p.title,
-                    "author": p.author,
-                    "content": p.content[:100] + "..."
-                    if p.content and len(p.content) > 100
-                    else p.content,
-                    "reason": "根据您的偏好推荐",
+                    "id": poem.id,
+                    "title": poem.title,
+                    "author": poem.author,
+                    "content": poem.content[:100] + "..."
+                    if poem.content and len(poem.content) > 100
+                    else poem.content,
+                    "reason": reason,
                 }
             )
+
+        if not result:
+            fallback_poems = Poem.query.order_by(func.rand()).limit(10).all()
+            result = [
+                {
+                    "id": poem.id,
+                    "title": poem.title,
+                    "author": poem.author,
+                    "content": poem.content[:100] + "..."
+                    if poem.content and len(poem.content) > 100
+                    else poem.content,
+                    "reason": "入门推荐",
+                }
+                for poem in fallback_poems
+            ]
 
         return jsonify({"poems": result})
     except Exception as e:

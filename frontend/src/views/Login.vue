@@ -55,6 +55,7 @@
 
         <div class="actions">
           <router-link to="/register" class="register-link">尚无称谓？前往注册</router-link>
+          <router-link to="/admin/login" class="register-link admin-link">管理员入口</router-link>
         </div>
 
         <div class="footer-note">
@@ -369,6 +370,10 @@ const handleLogin = async () => {
 .actions {
   text-align: center;
   margin-top: 25px;
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
   animation: fade-in 0.8s ease-out 1s both;
 }
 
@@ -400,6 +405,10 @@ const handleLogin = async () => {
 
 .register-link:hover::after {
   width: 100%;
+}
+
+.admin-link {
+  color: var(--text-secondary);
 }
 
 .footer-note {

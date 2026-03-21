@@ -1,1 +1,1 @@
-# BERTopic Recommender Package
+# Hybrid collaborative filtering package
