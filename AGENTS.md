@@ -48,32 +48,6 @@ bun run dev
 
 ---
 
-## 实验运行
-
-### 方案一：诗词数据集实验（合成数据）
-
-```bash
-cd backend
-conda activate myenv
-python -m experiments.platium_experiment
-```
-
-实验结果输出: `backend/experiments/platium_results.json`
-
-### 方案二：MovieLens真实数据集实验（推荐）
-
-```bash
-cd backend
-conda activate myenv
-python -m experiments.movielens_experiment
-```
-
-实验结果输出: `backend/experiments/movielens_results.json`
-
-该实验使用MovieLens-100k真实数据集，包含943个用户、1682部电影、10万条评分，是推荐系统领域的标准数据集。
-
----
-
 ## 注意事项
 
 1. **数据库配置**: 确保 MySQL/PostgreSQL 已启动，配置文件在 `backend/config.py`
@@ -96,7 +70,6 @@ PostG_Refactor/
 ├── backend/               # Flask 后端
 │   ├── core/              # 推荐算法核心
 │   │   ├── hybrid_cf.py    # 核心算法
-│   ├── experiments/       # 实验代码
 │   ├── app.py             # 主服务入口
 │   └── run_server.py      # 启动脚本
 ├── frontend/              # Vue.js 前端
